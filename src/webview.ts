@@ -95,6 +95,7 @@ export function getWebviewHtml(): string {
       <button id="explain-btn" class="secondary">Explain selection</button>
       <button id="fix-btn" class="secondary">Fix selection</button>
       <button id="insert-btn" class="secondary">Insert at cursor</button>
+      <button id="setup-btn" class="secondary">Setup</button>
     </div>
     <div id="messages"></div>
     <div id="waiting" class="card" style="display:none"></div>
@@ -141,7 +142,8 @@ export function getWebviewHtml(): string {
       return '<div class="card"><strong style="font-family:var(--vscode-editor-font-family)">' + esc(m.model) + '</strong> ' +
         (m.recommended ? '<span class="badge">Recommended</span> ' : '') +
         '<span class="badge">' + esc(m.label) + '</span><br><span class="secondary">' + esc(m.detail || '') + '</span>' +
-        (m.button ? '<div class="row"><button onclick="post(\\'download\\',{model:' + JSON.stringify(m.model) + '})">Download</button></div>' : '') + '</div>';
+        (m.downloaded ? '<div class="row"><span class="secondary">Downloaded</span></div>' :
+          (m.button ? '<div class="row"><button onclick="post(\\'download\\',{model:' + JSON.stringify(m.model) + '})">Download</button></div>' : '')) + '</div>';
     }).join('');
     document.getElementById('setup-note').textContent = note || '';
   }
@@ -202,6 +204,7 @@ export function getWebviewHtml(): string {
   document.getElementById('send-btn').onclick = function() {
     const v = document.getElementById('composer').value; if (v.trim()) { post('chat', { text: v }); }
   };
+  document.getElementById('setup-btn').onclick = function() { post('showSetup', {}); };
   document.getElementById('back-link').onclick = function(e) { e.preventDefault(); show('chat'); };
   document.getElementById('replay-prev').onclick = function() { state.frameIndex = Math.max(0, state.frameIndex - 1); renderReplay(); };
   document.getElementById('replay-next').onclick = function() { state.frameIndex = Math.min(state.frames.length - 1, state.frameIndex + 1); renderReplay(); };
@@ -218,15 +221,21 @@ export function getWebviewHtml(): string {
     if (m.type === 'setup') { renderSetup(m.steps, m.models, m.note); show('setup'); }
     if (m.type === 'ready') { document.getElementById('header-status').textContent = m.status; show('chat'); }
     if (m.type === 'status') { document.getElementById('header-status').textContent = m.status; }
-    if (m.type === 'message') { addMessage(m.meta, m.body, m.isCode); }
-    if (m.type === 'waiting') { showWaiting(m.title, m.elapsed, m.rangeLine); }
+    // Chat-screen content always switches to Chat first. This is the
+    // one action-visibility mechanism (the extension does not also
+    // post a show-chat before these): without it, a Fix/Explain
+    // answer posted while Setup was visible landed in the hidden
+    // chat-screen div. 'waitingDone' alone does not switch, it only
+    // hides the waiting card after a shown wait.
+    if (m.type === 'message') { show('chat'); addMessage(m.meta, m.body, m.isCode); }
+    if (m.type === 'waiting') { show('chat'); showWaiting(m.title, m.elapsed, m.rangeLine); }
     if (m.type === 'waitingDone') { hideWaiting(); }
-    if (m.type === 'result') { showResult(m.result); }
+    if (m.type === 'result') { show('chat'); showResult(m.result); }
     if (m.type === 'replay') {
       state.frames = m.frames; state.frameIndex = 0; state.totalSteps = m.totalSteps; state.replaySub = m.sub;
       show('replay'); renderReplay();
     }
-    if (m.type === 'hint') { addMessage('', m.text, false); }
+    if (m.type === 'hint') { show('chat'); addMessage('', m.text, false); }
   });
   post('ready', {});
 </script>

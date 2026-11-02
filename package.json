@@ -104,7 +104,7 @@
     "watch": "tsc -watch -p ./",
     "bundle": "node esbuild.js"
   },
-  "version": "0.1.1",
+  "version": "0.1.2",
   "repository": {
     "type": "git",
     "url": "https://github.com/OpenSourceRulesz/ollada-code.git"

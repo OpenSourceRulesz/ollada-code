@@ -28,7 +28,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { runChecks } from './checks';
-import { fitLabel, isRedLabel, NEMOTRON_DETAIL, recommendedIndex } from './fitLabels';
+import { fitLabel, NEMOTRON_DETAIL, recommendedIndex } from './fitLabels';
 import type { MachineKind, RecommendRow } from './fitLabels';
 import { pickPort } from './ports';
 import { CHECKS_PASSED_WARNING, EXPLAIN_PROMPT, FIX_PROMPT, insertPrompt } from './prompts';
@@ -38,11 +38,12 @@ import { countChangedLines, simpleDiff, spliceInsert, spliceSelection, stripFenc
 import { WaitingHistory } from './waiting';
 import type { ActionKind } from './waiting';
 import { getWebviewHtml } from './webview';
+import { shouldShowChat, showDownloadButton } from './screen';
 
 const MIN_VERSION = '0.3.4';
 
 interface SetupStep { icon: string; title: string; detail: string; command?: string; }
-interface ModelRowView { model: string; label: string; detail: string; button: boolean; recommended: boolean; }
+interface ModelRowView { model: string; label: string; detail: string; button: boolean; downloaded: boolean; recommended: boolean; }
 
 interface PendingEdit {
   kind: 'fix' | 'insert' | 'explain';
@@ -203,6 +204,40 @@ export function activate(context: vscode.ExtensionContext): void {
     return { kind, rows, raw };
   }
 
+  // Downloaded check, non-downloading and no guessed cache path.
+  // ollada has no list/show flag for this: list prints the shelf,
+  // show prints the recipe and fit. The shelf's own cache test is in
+  // its rm command (cli.py): huggingface_hub.scan_cache_dir() repos
+  // matched against each recipe's source. This runs exactly that test
+  // (recipe sources from ollada.recipes.load_catalog, cache from
+  // scan_cache_dir, which honours HF_HOME) in one python invocation
+  // for the whole shelf. Any failure returns an empty set, so the UI
+  // falls back to showing Download — it never claims Downloaded
+  // without a check. A repo present in the cache counts as downloaded,
+  // the same definition the shelf's rm command uses; pull is
+  // cache-first, so a partial cache is completed by pull, not redownloaded.
+  async function getDownloadedModels(python: string): Promise<Set<string>> {
+    const script = [
+      'import sys',
+      'try:',
+      '    from huggingface_hub import scan_cache_dir',
+      '    from ollada.recipes import load_catalog',
+      '    cached = {r.repo_id for r in list(scan_cache_dir().repos)}',
+      '    for rec in load_catalog():',
+      '        print(rec.name + " " + ("cached" if rec.source in cached else "missing"))',
+      'except Exception:',
+      '    sys.exit(1)',
+    ].join('\n');
+    const res = await runCommand(python, ['-c', script]);
+    if (res.code !== 0) { return new Set(); }
+    const out = new Set<string>();
+    for (const line of res.stdout.split('\n')) {
+      const m = line.match(/^(\S+)\s+cached$/);
+      if (m) { out.add(m[1]); }
+    }
+    return out;
+  }
+
   async function buildSetup(): Promise<{ steps: SetupStep[]; models: ModelRowView[]; note: string; ready: boolean; kind: MachineKind }> {
     const python = await findPython();
     const steps: SetupStep[] = [];
@@ -265,13 +300,16 @@ export function activate(context: vscode.ExtensionContext): void {
       });
     }
     const recIndex = recommendedIndex(recommend.rows, kind);
+    const downloaded = olladaVersion ? await getDownloadedModels(python) : new Set<string>();
     models = recommend.rows.map((row, i) => {
       const label = fitLabel(row, kind);
+      const isDownloaded = downloaded.has(row.model);
       return {
         model: row.model,
         label,
         detail: row.detail ?? '',
-        button: !isRedLabel(label) && label !== 'Unknown',
+        button: showDownloadButton(label, isDownloaded),
+        downloaded: isDownloaded,
         recommended: i === recIndex,
       };
     });
@@ -292,10 +330,22 @@ export function activate(context: vscode.ExtensionContext): void {
     return { steps, models, note, ready, kind };
   }
 
-  async function refreshSetup(): Promise<void> {
+  // Single source of screen choice. 'setup' is always posted first;
+  // 'ready' (which shows Chat in the webview) is posted only after it,
+  // and only when serve is running and Setup was not forced. That
+  // ordering is the fix: previously startServe posted 'ready' and then
+  // refreshSetup posted 'setup' seconds later, so Setup always won
+  // and Chat was unreachable. forceSetup=true is the chat screen's
+  // Setup button: it shows Setup again without touching serve.
+  async function refreshSetup(forceSetup = false): Promise<void> {
     const setup = await buildSetup();
     post('setup', { steps: setup.steps, models: setup.models, note: setup.note });
-    if (setup.ready) { setStatus(`Ollada: serving ${serveModel} on ${servePort}`); }
+    if (setup.ready) {
+      setStatus(`Ollada: serving ${serveModel} on ${servePort}`);
+      if (shouldShowChat(setup.ready, forceSetup)) {
+        post('ready', { status: `Ollada: serving ${serveModel} on ${servePort}` });
+      }
+    }
   }
 
   async function startServe(): Promise<void> {
@@ -332,7 +382,8 @@ export function activate(context: vscode.ExtensionContext): void {
         if (res.status === 200) {
           servePort = picked.port;
           setStatus(`Ollada: serving ${serveModel} on ${servePort}`);
-          post('ready', { status: `Ollada: serving ${serveModel} on ${servePort}` });
+          // No premature post('ready') here: refreshSetup posts setup
+          // first, then ready, so Chat is the final screen.
           void refreshSetup();
           return;
         }
@@ -577,6 +628,12 @@ export function activate(context: vscode.ExtensionContext): void {
           break;
         case 'checkAgain':
           void refreshSetup();
+          break;
+        case 'showSetup':
+          // Back to Setup without stopping serve: serveChild and
+          // servePort are untouched, so Start serve again while
+          // serving still reports "already running".
+          void refreshSetup(true);
           break;
         case 'startServe':
           void startServe();
