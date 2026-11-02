@@ -5,6 +5,10 @@
 // Primary buttons and text accents are #5558C9, hover #6265D6.
 // UI font is the VS Code font (var(--vscode-font-family)); Geist
 // bundling is deferred before any publish (spec 10c, license unchecked).
+// Mockup v2 polish (0.1.3, presentation only): step circles, fit dots,
+// Recommended card tint, pill chat buttons, arrow send button, green-dot
+// serving header. Panel stays Beside; backgrounds/text/borders/inputs/
+// diff colours stay VS Code theme variables, no forced navy skin.
 // Code always uses the editor font.
 export function getWebviewHtml(): string {
   return `<!DOCTYPE html>
@@ -46,15 +50,38 @@ export function getWebviewHtml(): string {
   }
   .card {
     border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
-    border-radius: 6px; padding: 10px; margin: 10px 0;
+    border-radius: 8px; padding: 10px; margin: 10px 0;
   }
+  .card-recommended { border-color: #5558C9; background: rgba(85, 88, 201, 0.10); }
+  .step { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0; }
+  .step-circle {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; min-width: 22px; border-radius: 50%;
+    font-size: 0.85em; font-weight: 700; flex-shrink: 0; margin-top: 1px;
+  }
+  .step-done { background: #2DA44E; color: #fff; }
+  .step-num { background: #5558C9; color: #fff; }
+  .step-warn { background: #D29922; color: #1f1f1f; }
+  .fit-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; margin-right: 2px; }
+  .serving-dot { color: #2DA44E; }
+  .pill-btn {
+    background: transparent; border: 1px solid var(--vscode-widget-border);
+    color: var(--vscode-foreground); border-radius: 999px; padding: 6px 14px;
+  }
+  .pill-btn:hover { border-color: #5558C9; background: rgba(85, 88, 201, 0.12); }
+  .composer-row { align-items: flex-end; }
+  .composer-row textarea { flex: 1; }
+  .send-btn {
+    background: #5558C9; color: #fff; border-radius: 8px;
+    width: 40px; min-width: 40px; height: 40px; font-size: 1.25em; line-height: 1; padding: 0;
+  }
+  .send-btn:hover { background: #6265D6; }
   .pill {
     background: var(--vscode-editor-background);
     border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
     border-radius: 4px; padding: 6px 8px; font-family: var(--vscode-editor-font-family);
     font-size: var(--vscode-editor-font-size); word-break: break-all;
   }
-  .step { margin: 8px 0; }
   .row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
   .badge { font-weight: 600; }
   .diff { font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); white-space: pre-wrap; }
@@ -63,7 +90,7 @@ export function getWebviewHtml(): string {
   .warning {
     background: var(--vscode-inputValidation-warningBackground);
     border: 1px solid var(--vscode-inputValidation-warningBorder);
-    border-radius: 4px; padding: 8px; margin: 8px 0;
+    border-radius: 8px; padding: 8px; margin: 8px 0;
   }
   .msg { margin: 10px 0; }
   .msg .meta { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
@@ -92,18 +119,18 @@ export function getWebviewHtml(): string {
 
   <section id="chat-screen" style="display:none">
     <div class="row">
-      <button id="explain-btn" class="secondary">Explain selection</button>
-      <button id="fix-btn" class="secondary">Fix selection</button>
-      <button id="insert-btn" class="secondary">Insert at cursor</button>
-      <button id="setup-btn" class="secondary">Setup</button>
+      <button id="explain-btn" class="pill-btn">Explain selection</button>
+      <button id="fix-btn" class="pill-btn">Fix selection</button>
+      <button id="insert-btn" class="pill-btn">Insert at cursor</button>
+      <button id="setup-btn" class="pill-btn">Setup</button>
     </div>
     <div id="messages"></div>
     <div id="waiting" class="card" style="display:none"></div>
     <div id="result" class="card" style="display:none"></div>
-    <div class="row">
-      <textarea id="composer" rows="3" placeholder="Ask about this file"></textarea>
+    <div class="row composer-row">
+      <textarea id="composer" rows="3" placeholder="Ask about this file (Ctrl+Enter to send)"></textarea>
+      <button id="send-btn" class="send-btn" aria-label="Send">→</button>
     </div>
-    <div class="row"><button id="send-btn">Send</button></div>
     <p class="secondary">Inserting writes new code at the cursor. It doesn’t read the code after the cursor yet; that comes with API-level fill-in-the-middle in Phase 2.</p>
   </section>
 
@@ -134,13 +161,25 @@ export function getWebviewHtml(): string {
   }
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
   function renderSetup(steps, models, note) {
+    // Mockup v2 step circles. Done steps (✓) get a green check circle;
+    // pending steps (•) get a numbered circle in primary, counted over
+    // non-warning steps in Setup order (Python 1, ollada 2, Pick a
+    // model 3, Start serve 4); warning steps (⚠) get an amber warning
+    // circle and do not consume a number, so a server-extra warning
+    // never renumbers Pick a model / Start serve.
+    let canonical = 0;
     document.getElementById('setup-steps').innerHTML = steps.map(function(s) {
-      return '<div class="step">' + esc(s.icon) + ' <strong>' + esc(s.title) + '</strong> — ' + esc(s.detail) +
-        (s.command ? '<div class="pill">' + esc(s.command) + ' <button class="secondary" onclick="post(\\'copy\\',{text:' + JSON.stringify(s.command) + '})">Copy</button></div>' : '') + '</div>';
+      let circle = '';
+      if (s.icon === '✓') { canonical++; circle = '<span class="step-circle step-done" aria-hidden="true">✓</span>'; }
+      else if (s.icon === '⚠') { circle = '<span class="step-circle step-warn" aria-hidden="true">⚠</span>'; }
+      else { canonical++; circle = '<span class="step-circle step-num" aria-hidden="true">' + canonical + '</span>'; }
+      return '<div class="step">' + circle + '<div><strong>' + esc(s.title) + '</strong> — ' + esc(s.detail) +
+        (s.command ? '<div class="pill">' + esc(s.command) + ' <button class="secondary" onclick="post(\\'copy\\',{text:' + JSON.stringify(s.command) + '})">Copy</button></div>' : '') + '</div></div>';
     }).join('');
     document.getElementById('model-picker').innerHTML = models.map(function(m) {
-      return '<div class="card"><strong style="font-family:var(--vscode-editor-font-family)">' + esc(m.model) + '</strong> ' +
+      return '<div class="card' + (m.recommended ? ' card-recommended' : '') + '"><strong style="font-family:var(--vscode-editor-font-family)">' + esc(m.model) + '</strong> ' +
         (m.recommended ? '<span class="badge">Recommended</span> ' : '') +
+        '<span class="fit-dot" style="background:' + esc(m.dot || '#8B949E') + '" aria-hidden="true"></span> ' +
         '<span class="badge">' + esc(m.label) + '</span><br><span class="secondary">' + esc(m.detail || '') + '</span>' +
         (m.downloaded ? '<div class="row"><span class="secondary">Downloaded</span></div>' :
           (m.button ? '<div class="row"><button onclick="post(\\'download\\',{model:' + JSON.stringify(m.model) + '})">Download</button></div>' : '')) + '</div>';
@@ -204,6 +243,11 @@ export function getWebviewHtml(): string {
   document.getElementById('send-btn').onclick = function() {
     const v = document.getElementById('composer').value; if (v.trim()) { post('chat', { text: v }); }
   };
+  // Ctrl+Enter / Cmd+Enter sends; plain Enter still inserts a newline,
+  // so multi-line composing is unchanged.
+  document.getElementById('composer').addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); document.getElementById('send-btn').click(); }
+  });
   document.getElementById('setup-btn').onclick = function() { post('showSetup', {}); };
   document.getElementById('back-link').onclick = function(e) { e.preventDefault(); show('chat'); };
   document.getElementById('replay-prev').onclick = function() { state.frameIndex = Math.max(0, state.frameIndex - 1); renderReplay(); };
@@ -219,7 +263,13 @@ export function getWebviewHtml(): string {
   window.addEventListener('message', function(event) {
     const m = event.data;
     if (m.type === 'setup') { renderSetup(m.steps, m.models, m.note); show('setup'); }
-    if (m.type === 'ready') { document.getElementById('header-status').textContent = m.status; show('chat'); }
+    if (m.type === 'ready') {
+      const s = String(m.status || '');
+      const h = document.getElementById('header-status');
+      if (s.charAt(0) === '●') { h.innerHTML = '<span class="serving-dot">●</span> ' + esc(s.slice(1).trim()); }
+      else { h.textContent = s; }
+      show('chat');
+    }
     if (m.type === 'status') { document.getElementById('header-status').textContent = m.status; }
     // Chat-screen content always switches to Chat first. This is the
     // one action-visibility mechanism (the extension does not also

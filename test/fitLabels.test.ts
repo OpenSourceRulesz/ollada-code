@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { fitLabel, isGreenLabel, isRedLabel, recommendedIndex, NEMOTRON_DETAIL } from '../src/fitLabels';
+import { fitDotColor, fitLabel, isGreenLabel, isRedLabel, recommendedIndex, NEMOTRON_DETAIL } from '../src/fitLabels';
 
 test('GPU mapping: fits/tight/won\'t fit', () => {
   assert.equal(fitLabel({ model: 'dream:7b', verdict: 'fits', cpuVerified: false, muchSlowerThanSdar17b: false }, 'gpu'), 'Fits');
@@ -34,6 +34,16 @@ test('Recommended is first green row in recommend order, red rows have no button
   assert.equal(recommendedIndex(rows, 'cpu'), 1);
   assert.equal(isGreenLabel('Runs on CPU'), true);
   assert.equal(isRedLabel('Needs a GPU'), true);
+});
+
+test('fit dot colours: green good, amber caution, red blocked, grey unknown', () => {
+  assert.equal(fitDotColor('Fits'), '#2DA44E');
+  assert.equal(fitDotColor('Runs on CPU'), '#2DA44E');
+  assert.equal(fitDotColor('Tight'), '#D29922');
+  assert.equal(fitDotColor('Runs, slowly'), '#D29922');
+  assert.equal(fitDotColor("Won't fit"), '#CF222E');
+  assert.equal(fitDotColor('Needs a GPU'), '#CF222E');
+  assert.equal(fitDotColor('Unknown'), '#8B949E');
 });
 
 test('nemotron detail drops the cold-load ratio', () => {

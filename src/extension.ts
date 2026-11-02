@@ -28,7 +28,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { runChecks } from './checks';
-import { fitLabel, NEMOTRON_DETAIL, recommendedIndex } from './fitLabels';
+import { fitDotColor, fitLabel, NEMOTRON_DETAIL, recommendedIndex } from './fitLabels';
 import type { MachineKind, RecommendRow } from './fitLabels';
 import { pickPort } from './ports';
 import { CHECKS_PASSED_WARNING, EXPLAIN_PROMPT, FIX_PROMPT, insertPrompt } from './prompts';
@@ -43,7 +43,7 @@ import { shouldShowChat, showDownloadButton } from './screen';
 const MIN_VERSION = '0.3.4';
 
 interface SetupStep { icon: string; title: string; detail: string; command?: string; }
-interface ModelRowView { model: string; label: string; detail: string; button: boolean; downloaded: boolean; recommended: boolean; }
+interface ModelRowView { model: string; label: string; detail: string; button: boolean; downloaded: boolean; recommended: boolean; dot: string; }
 
 interface PendingEdit {
   kind: 'fix' | 'insert' | 'explain';
@@ -311,6 +311,7 @@ export function activate(context: vscode.ExtensionContext): void {
         button: showDownloadButton(label, isDownloaded),
         downloaded: isDownloaded,
         recommended: i === recIndex,
+        dot: fitDotColor(label),
       };
     });
     steps.push({ icon: '•', title: 'Pick a model', detail: 'From ollada recommend, for this machine.' });
@@ -341,9 +342,12 @@ export function activate(context: vscode.ExtensionContext): void {
     const setup = await buildSetup();
     post('setup', { steps: setup.steps, models: setup.models, note: setup.note });
     if (setup.ready) {
+      // Status bar keeps the port; the panel header gets the mockup
+      // v2 serving line (green dot + model + machine kind), rendered
+      // with a green dot by the webview's 'ready' handler.
       setStatus(`Ollada: serving ${serveModel} on ${servePort}`);
       if (shouldShowChat(setup.ready, forceSetup)) {
-        post('ready', { status: `Ollada: serving ${serveModel} on ${servePort}` });
+        post('ready', { status: `● ${serveModel} on ${setup.kind === 'cpu' ? 'CPU' : 'GPU'}` });
       }
     }
   }

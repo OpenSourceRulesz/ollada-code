@@ -39,6 +39,19 @@ export function isRedLabel(label: FitLabel): boolean {
   return label === "Won't fit" || label === 'Needs a GPU';
 }
 
+/**
+ * Mockup v2 fit dot, display only. The dot is a small graphic marker,
+ * not small text, so these marker colours are not subject to the
+ * #6C6FD8 small-text rule. Green = good fit, amber = caution/slow,
+ * red = does not fit, grey = unknown.
+ */
+export function fitDotColor(label: FitLabel): string {
+  if (label === 'Fits' || label === 'Runs on CPU') { return '#2DA44E'; }
+  if (label === 'Tight' || label === 'Runs, slowly') { return '#D29922'; }
+  if (label === "Won't fit" || label === 'Needs a GPU') { return '#CF222E'; }
+  return '#8B949E';
+}
+
 /** First green row in recommend order gets the Recommended tag. */
 export function recommendedIndex(rows: RecommendRow[], kind: MachineKind): number {
   for (let i = 0; i < rows.length; i++) {

@@ -1,4 +1,4 @@
-# BUILD REPORT — ollada-code, Phase 1 (0.1.0 published; 0.1.1 docs correction; 0.1.2 chat fix)
+# BUILD REPORT — ollada-code, Phase 1 (0.1.0 published; 0.1.1 docs correction; 0.1.2 chat fix; 0.1.3 style polish)
 
 Built 2026-11-02 in `~/workspace/ollada-code/`, from the revised spec
 (2026-11-02, Claude with Muse's review), the round 2 cleanup, and the
@@ -13,6 +13,15 @@ Chat first; a Setup button returns to Setup without stopping serve;
 and the model picker shows Downloaded for models already in the
 Hugging Face cache (checked via scan_cache_dir against recipe sources),
 instead of Download for every non-red model.
+0.1.3 is presentation only: Setup steps get green check circles for
+done steps and numbered primary circles for pending steps (warnings
+get an amber circle and do not consume a number); model cards get a
+green/amber/red/grey fit dot and a primary-tinted Recommended card;
+chat buttons become outline pills; Send becomes a primary arrow button
+(Ctrl+Enter also sends, plain Enter still inserts a newline); the
+panel header shows a green dot plus model and machine kind while
+serving. Panel stays Beside, theme variables and tokens unchanged,
+no Geist bundled, no behaviour changes.
 
 GitHub repo: github.com/OpenSourceRulesz/ollada-code, pushed at
 c282bc1 and 969f9b1. 0.1.0 published via Trusted Publishing. No git
@@ -206,7 +215,7 @@ assumption:
   rejection, but the serve-side shape is still a proposal. A real
   serve change is needed before Replay can be dogfooded with frames.
 - UI font (spec 10c): Geist bundling and its license check are still
-  open; 0.1.0, 0.1.1, and 0.1.2 use the VS Code font, which is
+  open; 0.1.0, 0.1.1, 0.1.2, and 0.1.3 use the VS Code font, which is
   safe and native.
 - Site install commands (spec 10a note): the live site still shows
   `pip install "ollada[cpu]"` / `"ollada[gpu]"` with a separate
