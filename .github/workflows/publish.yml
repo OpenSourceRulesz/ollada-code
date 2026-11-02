@@ -1,0 +1,24 @@
+name: Publish to VS Code Marketplace
+
+# Manual only, for now. Run this from the Actions tab after the
+# Trusted Publishing policy exists in the Marketplace publisher page.
+# It publishes exactly the version in package.json (0.1.0 on first run).
+# Re-running it after a successful publish will fail, because that
+# version already exists on the Marketplace. Bump the version first
+# for the next publish.
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npx @vscode/vsce publish --oidc

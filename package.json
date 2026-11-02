@@ -1,0 +1,112 @@
+{
+  "activationEvents": [
+    "onView:ollada-code.chat",
+    "onCommand:ollada-code.openPanel",
+    "onCommand:ollada-code.explainSelection",
+    "onCommand:ollada-code.fixSelection",
+    "onCommand:ollada-code.insertAtCursor",
+    "onCommand:ollada-code.startServe",
+    "onCommand:ollada-code.checkAgain"
+  ],
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "ollada-code.openPanel",
+        "title": "Ollada: Open Panel"
+      },
+      {
+        "command": "ollada-code.explainSelection",
+        "title": "Ollada: Explain Selection"
+      },
+      {
+        "command": "ollada-code.fixSelection",
+        "title": "Ollada: Fix Selection"
+      },
+      {
+        "command": "ollada-code.insertAtCursor",
+        "title": "Ollada: Insert at Cursor"
+      },
+      {
+        "command": "ollada-code.startServe",
+        "title": "Ollada: Start Serve"
+      },
+      {
+        "command": "ollada-code.checkAgain",
+        "title": "Ollada: Check Again"
+      }
+    ],
+    "configuration": {
+      "properties": {
+        "ollada-code.model": {
+          "default": "sdar:1.7b",
+          "description": "Default model for Chat, Explain, Fix, and Insert. Must already be downloaded; the extension never downloads a model without a click.",
+          "type": "string"
+        },
+        "ollada-code.pythonPath": {
+          "default": "",
+          "description": "Python interpreter used to run ollada (its venv Python). Empty means: Python extension active environment, then workspace .venv, then python on PATH.",
+          "type": "string"
+        },
+        "ollada-code.servePort": {
+          "default": 0,
+          "description": "Preferred serve port. 0 means: try 11435, then 11436, 11437, and so on. The extension never kills the process holding a port.",
+          "type": "number"
+        }
+      },
+      "title": "ollada-code"
+    },
+    "views": {
+      "ollada-code": [
+        {
+          "id": "ollada-code.chat",
+          "name": "Ollada",
+          "type": "webview"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "icon": "resources/icon.png",
+          "id": "ollada-code",
+          "title": "Ollada"
+        }
+      ]
+    }
+  },
+  "description": "Chat, Fix, and Insert in VS Code, powered by your local ollada serve. Phase 1 only: no autocomplete, no agent loop, no streaming, no telemetry, no bundled models.",
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.23.0",
+    "typescript": "^5.5.0"
+  },
+  "displayName": "ollada-code",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "icon": "resources/icon.png",
+  "license": "MIT",
+  "main": "./out/extension.js",
+  "name": "ollada-code",
+  "publisher": "OpenSourceRulesz",
+  "scripts": {
+    "compile": "tsc -p ./",
+    "lint": "tsc -p ./ --noEmit",
+    "package": "vsce package",
+    "test": "node --test out/test/*.test.js",
+    "vscode:prepublish": "npm run compile && node esbuild.js --production",
+    "watch": "tsc -watch -p ./",
+    "bundle": "node esbuild.js"
+  },
+  "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OpenSourceRulesz/ollada-code.git"
+  }
+}

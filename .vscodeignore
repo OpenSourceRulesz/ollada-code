@@ -1,0 +1,14 @@
+vsc-extension-quickstart.md
+**/.gitignore
+**/.vscode/**
+**/node_modules/**
+**/src/**
+**/test/**
+**/test-fixtures/**
+**/scripts/**
+**/esbuild.js
+**/tsconfig.json
+**/.vscodeignore
+out/test/**
+**/__pycache__/**
+**/*.pyc
