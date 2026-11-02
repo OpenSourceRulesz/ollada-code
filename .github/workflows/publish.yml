@@ -2,7 +2,7 @@ name: Publish to VS Code Marketplace
 
 # Manual only, for now. Run this from the Actions tab after the
 # Trusted Publishing policy exists in the Marketplace publisher page.
-# It publishes exactly the version in package.json (0.1.0 on first run).
+# It publishes exactly the version in package.json.
 # Re-running it after a successful publish will fail, because that
 # version already exists on the Marketplace. Bump the version first
 # for the next publish.

@@ -1,17 +1,18 @@
-# BUILD REPORT — ollada-code 0.1.0, Phase 1 dogfood build
+# BUILD REPORT — ollada-code, Phase 1 (0.1.0 published; 0.1.1 docs correction)
 
 Built 2026-11-02 in `~/workspace/ollada-code/`, from the revised spec
 (2026-11-02, Claude with Muse's review), the round 2 cleanup, and the
-briefing as source of truth. Dallas's go: "build the extension gooooo"
-(2026-11-02). New repo confirmed, fit table as written, best practices
-deferred to the builder. This is a build, not a publish.
+briefing as source of truth. New repo confirmed, fit table as written,
+best practices deferred to the builder. 0.1.0 was subsequently
+published on the VS Code Marketplace as OpenSourceRulesz.ollada-code;
+0.1.1 corrects the public docs (personal name removed, publish
+status updated). No code functionality changes in 0.1.1.
 
-**No GitHub push, no Marketplace publish, no git tag, no release.**
-The `repository` field in package.json points at the intended new repo
-(`github.com/OpenSourceRulesz/ollada-code`), which does not exist on
-GitHub yet. Nothing in this folder was pushed anywhere, and the
+GitHub repo: github.com/OpenSourceRulesz/ollada-code, pushed at
+c282bc1 and 969f9b1. 0.1.0 published via Trusted Publishing. No git
+tag, no release beyond the Marketplace publish. The
 `~/workspace/ollada/` tree, the live site, and every other project were
-not touched.
+not touched by this build.
 
 ## Files created
 
@@ -117,15 +118,13 @@ not touched.
 Prerequisites on the Dell: VS Code, Python 3.12 to 3.14, and a venv
 with ollada 0.3.4. Do not taskkill Code.exe to free a port.
 
-Step 1 — copy the .vsix to the Dell:
+Step 1 — install from the Marketplace:
 
-`ollada-code-0.1.0.vsix` (in this folder; send it as a file, do not
-publish it anywhere).
+In VS Code, Extensions view, search ollada-code, publisher
+OpenSourceRulesz, install 0.1.0 or newer. Do not transfer a .vsix
+file for normal testing.
 
-Step 2 — install it locally in VS Code:
-
-Extensions view, Views and More Actions, Install from VSIX, select
-`ollada-code-0.1.0.vsix`, then reload VS Code when prompted.
+Step 2 — reload VS Code when prompted after installing.
 
 Step 3 — make sure ollada is installed in the venv, with the server extra.
 In a PowerShell terminal with the venv active, run:
@@ -201,7 +200,7 @@ assumption:
   rejection, but the serve-side shape is still a proposal. A real
   serve change is needed before Replay can be dogfooded with frames.
 - UI font (spec 10c): Geist bundling and its license check are still
-  open before any publish. Dogfood uses the VS Code font, which is
+  open; 0.1.0 and 0.1.1 use the VS Code font, which is
   safe and native.
 - Site install commands (spec 10a note): the live site still shows
   `pip install "ollada[cpu]"` / `"ollada[gpu]"` with a separate

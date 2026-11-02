@@ -1,4 +1,4 @@
-"""Recreated test files, NOT Dallas's original script-test files.
+"""Recreated test files, NOT the original script-test files.
 
 The 9 Dell script-test files are described in the briefing (missing
 colon, missing return, indent, operator, off-by-one with intent,
