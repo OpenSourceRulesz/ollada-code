@@ -12,3 +12,5 @@ vsc-extension-quickstart.md
 out/test/**
 **/__pycache__/**
 **/*.pyc
+BUILD_REPORT.md
+.github/**
