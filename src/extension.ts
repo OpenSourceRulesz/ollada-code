@@ -62,7 +62,7 @@ const MIN_VERSION = '0.3.4';
 const VIEW_ID = 'ollada-code.chat';
 
 interface SetupStep { icon: string; title: string; detail: string; command?: string; action?: 'changePython'; }
-interface ModelRowView { model: string; label: string; detail: string; button: boolean; downloaded: boolean; recommended: boolean; dot: string; }
+interface ModelRowView { model: string; label: string; detail: string; button: boolean; downloaded: boolean; recommended: boolean; selected: boolean; dot: string; }
 interface FoundPython { path: string; source: string; hasOllada: boolean; }
 
 function compareVersions(a: string, b: string): number {
@@ -102,7 +102,7 @@ export function activate(context: vscode.ExtensionContext): void {
   let serveChild: childProcess.ChildProcess | undefined;
   let servePort: number | undefined;
   let serveReused = false;
-  let serveModel = vscode.workspace.getConfiguration('ollada-code').get<string>('model', 'sdar:1.7b');
+  let serveModel = vscode.workspace.getConfiguration('ollada-code').get<string>('model', 'sdar:4b');
   let machineKind: MachineKind = 'cpu';
   const proposals = new ProposalStore();
   const snapshotsById = new Map<string, Snapshots>();
@@ -237,7 +237,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration('ollada-code.pythonPath')) { pythonCache = undefined; }
-    if (e.affectsConfiguration('ollada-code.model')) { serveModel = vscode.workspace.getConfiguration('ollada-code').get<string>('model', 'sdar:1.7b'); }
+    if (e.affectsConfiguration('ollada-code.model')) { serveModel = vscode.workspace.getConfiguration('ollada-code').get<string>('model', 'sdar:4b'); }
   }));
 
   function checksScriptPath(): string {
@@ -389,7 +389,7 @@ export function activate(context: vscode.ExtensionContext): void {
           return {
             model: row.model, label, detail: row.detail ?? '',
             button: showDownloadButton(label, isDownloaded),
-            downloaded: isDownloaded, recommended: i === recIndex, dot: fitDotColor(label),
+            downloaded: isDownloaded, recommended: i === recIndex, selected: row.model === serveModel, dot: fitDotColor(label),
           };
         });
         steps.push({ icon: '•', title: 'Pick a model', detail: 'From ollada recommend, for this machine.' });
@@ -726,6 +726,18 @@ export function activate(context: vscode.ExtensionContext): void {
         break;
       }
       case 'checkAgain': pythonCache = undefined; void refreshSetup(); break;
+      case 'selectModel': {
+        // Card click in Setup: persist as a user setting so it survives
+        // reloads, then refresh so header + Selected badge update.
+        // Download clicks do NOT come through here and do not change it.
+        const model = String(message.model ?? '');
+        if (model) {
+          await vscode.workspace.getConfiguration('ollada-code').update('model', model, vscode.ConfigurationTarget.Global);
+          serveModel = model;
+          void refreshSetup();
+        }
+        break;
+      }
       case 'changePython': void changePython(); break;
       case 'startServe': void startServe(); break;
       case 'copy':

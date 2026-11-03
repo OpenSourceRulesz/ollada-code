@@ -7,6 +7,22 @@ test('stripFences removes fences, leaves bare code alone', () => {
   assert.equal(stripFences('def f():\n    return 1'), 'def f():\n    return 1');
 });
 
+test('stripFences removes fences sharing a line with code (0.1.5 colon bug)', () => {
+  assert.equal(
+    stripFences('```def greet(name):\n    print(f"Hello, {name}!")\n```'),
+    'def greet(name):\n    print(f"Hello, {name}!")',
+  );
+  assert.equal(
+    stripFences('```python\ndef f():\n    return 1\n```'),
+    'def f():\n    return 1',
+  );
+  assert.equal(
+    stripFences('def f():\n    return 1\n```'),
+    'def f():\n    return 1',
+  );
+  assert.equal(stripFences('```def f():\n    return 1'), 'def f():\n    return 1');
+});
+
 test('spliceSelection replaces exactly the selection', () => {
   assert.equal(spliceSelection('def f():\n    return 1\n', 0, 22, 'def f():\n    return 2\n'), 'def f():\n    return 2\n');
 });

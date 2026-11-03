@@ -7,8 +7,8 @@ parked **SDAR code LoRA** idea (scaling SDAR 1.7B LoRA fine-tuning into
 a larger coding model, parked 2026-11-01). Never call this extension
 just "ollada", and never call that parked model "ollada-code".
 
-Version: 0.1.4 in this source, independent of ollada 0.3.4. Publisher: OpenSourceRulesz.
-0.1.0, 0.1.1, 0.1.2, and 0.1.3 are published on the VS Code Marketplace as OpenSourceRulesz.ollada-code. 0.1.4 is a dogfood bug-fix round and is not published.
+Version: 0.1.5 in this source, independent of ollada 0.3.4. Publisher: OpenSourceRulesz.
+0.1.0 through 0.1.4 are published on the VS Code Marketplace as OpenSourceRulesz.ollada-code. 0.1.5 is not yet published: default model sdar:4b, robust fence stripping, clickable model cards in Setup.
 Install from VS Code Extensions search, not by transferring a .vsix file.
 GitHub repo: github.com/OpenSourceRulesz/ollada-code.
 

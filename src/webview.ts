@@ -87,6 +87,8 @@ export function getWebviewHtml(): string {
     border-radius: 8px; padding: 10px; margin: 10px 0;
   }
   .card-recommended { border-color: #5558C9; background: rgba(85, 88, 201, 0.10); }
+  #model-picker .card { cursor: pointer; }
+  .card-selected { border-color: #5558C9; border-width: 2px; }
   .step { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0; }
   .step-circle {
     display: inline-flex; align-items: center; justify-content: center;
@@ -238,8 +240,9 @@ export function getWebviewHtml(): string {
         '</div></div>';
     }).join('');
     document.getElementById('model-picker').innerHTML = m.models.map(function(row) {
-      return '<div class="card' + (row.recommended ? ' card-recommended' : '') + '"><strong style="font-family:var(--vscode-editor-font-family)">' + esc(row.model) + '</strong> ' +
+      return '<div class="card' + (row.recommended ? ' card-recommended' : '') + (row.selected ? ' card-selected' : '') + '" data-select="' + esc(row.model) + '" title="Click to select this model"><strong style="font-family:var(--vscode-editor-font-family)">' + esc(row.model) + '</strong> ' +
         (row.recommended ? '<span class="badge">Recommended</span> ' : '') +
+        (row.selected ? '<span class="badge">Selected</span> ' : '') +
         '<span class="fit-dot" style="background:' + esc(row.dot || '#8B949E') + '" aria-hidden="true"></span> ' +
         '<span class="badge">' + esc(row.label) + '</span><br><span class="secondary small">' + esc(row.detail || '') + '</span>' +
         (row.downloaded ? '<div class="row"><span class="secondary">Downloaded</span></div>' :
@@ -264,10 +267,17 @@ export function getWebviewHtml(): string {
     document.getElementById('header-status').textContent = m.headerStatus || '';
   }
   document.getElementById('setup').addEventListener('click', function(e) {
-    const t = e.target.closest('button'); if (!t) { return; }
-    if (t.dataset.copy) { post('copy', { text: t.dataset.copy }); }
-    if (t.dataset.download) { post('download', { model: t.dataset.download }); }
-    if (t.dataset.act === 'changePython') { post('changePython', {}); }
+    const t = e.target.closest('button');
+    if (t) {
+      if (t.dataset.copy) { post('copy', { text: t.dataset.copy }); }
+      if (t.dataset.download) { post('download', { model: t.dataset.download }); }
+      if (t.dataset.act === 'changePython') { post('changePython', {}); }
+      return;
+    }
+    // Card click (not a button): select that model. Download buttons
+    // are handled above and must not also select.
+    const card = e.target.closest('[data-select]');
+    if (card) { post('selectModel', { model: card.dataset.select }); }
   });
 
   function renderContext(c) {

@@ -3,9 +3,19 @@
 // WorkspaceEdit, one undo step, only when the user clicks Accept/Insert.
 export function stripFences(text: string): string {
   let out = text.trim();
-  const match = out.match(/^```(?:\w+)?\s*\n([\s\S]*?)\n?```$/);
-  if (match) { out = match[1].trim(); }
-  return out;
+  const hadFence = out.startsWith('```');
+  if (hadFence) { out = out.slice(3); }
+  // Language tag only when it is the whole first line, e.g. ```python\n,
+  // and only after a real opening fence. A same-line fence like
+  // ```def greet(name): must NOT eat "def" as a tag: that first line
+  // contains spaces, so it is code, not a tag.
+  const nl = out.indexOf('\n');
+  if (hadFence && nl >= 0) {
+    const first = out.slice(0, nl).trim();
+    if (/^[A-Za-z0-9_-]+$/.test(first)) { out = out.slice(nl + 1); }
+  }
+  if (out.endsWith('```')) { out = out.slice(0, -3); }
+  return out.trim();
 }
 
 /** Replace the selection range in `original` with `replacement`. */

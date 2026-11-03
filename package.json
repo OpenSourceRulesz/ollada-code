@@ -47,7 +47,7 @@
     "configuration": {
       "properties": {
         "ollada-code.model": {
-          "default": "sdar:1.7b",
+          "default": "sdar:4b",
           "description": "Default model for Chat, Explain, Fix, and Insert. Must already be downloaded; the extension never downloads a model without a click.",
           "type": "string"
         },
@@ -109,7 +109,7 @@
     "watch": "tsc -watch -p ./",
     "bundle": "node esbuild.js"
   },
-  "version": "0.1.4",
+  "version": "0.1.5",
   "repository": {
     "type": "git",
     "url": "https://github.com/OpenSourceRulesz/ollada-code.git"
