@@ -195,6 +195,7 @@ export function getWebviewHtml(): string {
       <button id="send-btn" class="send-btn" aria-label="Send">→</button>
     </div>
     <p class="secondary small" style="margin:0">With code selected, Insert replaces the selection. With nothing selected, it writes at the cursor. It doesn’t read the code after the cursor yet; that comes with API-level fill-in-the-middle in Phase 2.</p>
+    <p class="secondary small" style="margin:0">For Python files, Fix also sends the file’s top-level imports (if any), so the model doesn’t re-add one that’s already there. The chip shows “+ imports” when any are sent.</p>
   </footer>
 </div>
 
@@ -282,8 +283,9 @@ export function getWebviewHtml(): string {
 
   function renderContext(c) {
     const chip = document.getElementById('chip');
-    document.getElementById('chip-text').textContent = c.label;
-    chip.title = c.path || '';
+    const imports = c.headerImports || [];
+    document.getElementById('chip-text').textContent = c.label + (imports.length ? ' + imports' : '');
+    chip.title = (c.path || '') + (imports.length ? ' — Imports sent with Fix: ' + imports.join(', ') + (c.headerImportsTruncated ? ' (further imports omitted)' : '') : '');
     chip.className = 'chip' + (c.hasFile ? '' : ' empty');
     const ex = document.getElementById('explain-btn'), fx = document.getElementById('fix-btn'), ins = document.getElementById('insert-btn');
     ex.disabled = !c.explain; fx.disabled = !c.fix; ins.disabled = !c.insert;
@@ -334,10 +336,25 @@ export function getWebviewHtml(): string {
       '</div>';
     append(el);
   }
-  function dismissCard(id, note) {
+  function removeRetryRow() {
+    const row = document.getElementById('retry-fix-row');
+    if (row) { row.remove(); }
+  }
+  function dismissCard(id, note, offerRetryFix, retryContextLabel) {
     const el = log.querySelector('.card[data-id="' + CSS.escape(id) + '"]');
     if (el) { el.remove(); }
     if (note) { addNote(note); }
+    // 0.1.6: a discarded Fix offers one retry row against that same
+    // snapshot. It is removed by any new proposal, message, or retry.
+    removeRetryRow();
+    if (offerRetryFix) {
+      const row = document.createElement('div'); row.className = 'card'; row.id = 'retry-fix-row';
+      row.innerHTML = '<div><strong>Retry fix</strong> <span class="secondary small">' + esc(retryContextLabel || '') + '</span></div>' +
+        '<p class="secondary small">Tell the model what the first fix missed, e.g. “math is already imported, fix the domain error without adding an import”.</p>' +
+        '<textarea id="retry-fix-input" rows="2" placeholder="Instruction for the retry fix"></textarea>' +
+        '<div class="row"><button data-retry-fix="1">Retry fix</button></div>';
+      append(row);
+    }
   }
   log.addEventListener('click', function(e) {
     const t = e.target.closest('button'); if (!t) { return; }
@@ -345,6 +362,11 @@ export function getWebviewHtml(): string {
     if (t.dataset.accept && !t.disabled) { t.disabled = true; post('accept', { id: t.dataset.accept }); }
     if (t.dataset.reject) { t.disabled = true; post('reject', { id: t.dataset.reject }); }
     if (t.dataset.watch) { post('watch', { id: t.dataset.watch }); }
+    if (t.dataset.retryFix) {
+      const box = document.getElementById('retry-fix-input');
+      const v = box ? box.value : '';
+      if (v.trim()) { removeRetryRow(); post('retryFix', { text: v }); }
+    }
   });
 
   function renderReplay() {
@@ -389,13 +411,13 @@ export function getWebviewHtml(): string {
     if (m.type === 'setup') { renderSetup(m); }
     if (m.type === 'context') { renderContext(m); }
     if (m.type === 'status') { document.getElementById('header-status').textContent = m.status; }
-    if (m.type === 'userMessage') { addMessage(m.contextLabel ? 'Sent: ' + m.contextLabel : '', m.text, false, 'user'); }
-    if (m.type === 'message') { addMessage(m.meta, m.body, m.isCode); }
+    if (m.type === 'userMessage') { removeRetryRow(); addMessage(m.contextLabel ? 'Sent: ' + m.contextLabel : '', m.text, false, 'user'); }
+    if (m.type === 'message') { removeRetryRow(); addMessage(m.meta, m.body, m.isCode); }
     if (m.type === 'hint') { addNote(m.text); }
     if (m.type === 'waiting') { showWaiting(m.title, m.elapsed, m.rangeLine); }
     if (m.type === 'waitingDone') { hideWaiting(); }
-    if (m.type === 'result') { showResult(m.result); }
-    if (m.type === 'dismiss') { dismissCard(m.id, m.note); }
+    if (m.type === 'result') { removeRetryRow(); showResult(m.result); }
+    if (m.type === 'dismiss') { dismissCard(m.id, m.note, m.offerRetryFix, m.retryContextLabel); }
     if (m.type === 'replay') {
       state.frames = m.frames; state.frameIndex = 0; state.totalSteps = m.totalSteps; state.replaySub = m.sub;
       document.getElementById('replay-screen').style.display = 'block'; renderReplay();

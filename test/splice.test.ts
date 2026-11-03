@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { stripFences, spliceSelection, spliceInsert, simpleDiff, countChangedLines } from '../src/splice';
+import { stripFences, spliceSelection, spliceInsert, simpleDiff, countChangedLines, isImportOnlyReplacement } from '../src/splice';
 
 test('stripFences removes fences, leaves bare code alone', () => {
   assert.equal(stripFences('```python\ndef f():\n    return 1\n```'), 'def f():\n    return 1');
@@ -21,6 +21,15 @@ test('stripFences removes fences sharing a line with code (0.1.5 colon bug)', ()
     'def f():\n    return 1',
   );
   assert.equal(stripFences('```def f():\n    return 1'), 'def f():\n    return 1');
+});
+
+test('isImportOnlyReplacement flags the sqrt non-fix, not real fixes', () => {
+  assert.equal(isImportOnlyReplacement('result = math.sqrt(-1)', 'import math'), true, 'import-only vs non-import selection');
+  assert.equal(isImportOnlyReplacement('result = math.sqrt(-1)', 'import cmath\nresult = cmath.sqrt(-1)'), false, 'import plus fixed line is a real fix');
+  assert.equal(isImportOnlyReplacement('result = math.sqrt(-1)', 'result = cmath.sqrt(-1)'), false);
+  assert.equal(isImportOnlyReplacement('import math', 'import os'), false, 'a selection that is only imports is not the non-fix');
+  assert.equal(isImportOnlyReplacement('result = math.sqrt(-1)', ''), false, 'empty replacement is a deletion, not import-only');
+  assert.equal(isImportOnlyReplacement('result = math.sqrt(-1)', '# just a comment'), false);
 });
 
 test('spliceSelection replaces exactly the selection', () => {

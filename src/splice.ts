@@ -61,6 +61,39 @@ export function planEdit(
   return { start: active, end: active, replacement, spliced: fullText.slice(0, active) + replacement + fullText.slice(active) };
 }
 
+function isImportLine(line: string): boolean {
+  const t = line.trim();
+  return /^import\s+\S/.test(t) || /^from\s+\S+\s+import\s/.test(t);
+}
+
+/**
+ * 0.1.6: true when the selection contains real (non-import, non-comment)
+ * code but the replacement, after stripping, contains only import lines,
+ * comments, and blanks. That is the sqrt non-fix: selecting
+ * `result = math.sqrt(-1)` and getting back only `import math` — the
+ * old verifier PASSES it (it parses, math is defined, no dead code),
+ * yet accepting it deletes the buggy line and fixes nothing. An empty
+ * replacement is a deletion, not an import-only proposal, and returns
+ * false. Parenthesised import continuations count as import lines.
+ */
+export function isImportOnlyReplacement(selection: string, replacement: string): boolean {
+  const selLines = selection.split('\n').map((l) => l.trim()).filter((l) => l !== '' && !l.startsWith('#'));
+  if (!selLines.some((l) => !isImportLine(l))) { return false; }
+  const repLines = stripFences(replacement).split('\n');
+  let depth = 0;
+  const meaningful: string[] = [];
+  for (const raw of repLines) {
+    const t = raw.trim();
+    if (t === '' || t.startsWith('#')) { continue; }
+    if (depth > 0 || isImportLine(raw)) {
+      depth += (raw.match(/\(/g) || []).length - (raw.match(/\)/g) || []).length;
+      continue;
+    }
+    meaningful.push(t);
+  }
+  return meaningful.length === 0 && repLines.some((l) => isImportLine(l));
+}
+
 export interface DiffLine { kind: 'same' | 'add' | 'remove'; text: string; }
 
 /**

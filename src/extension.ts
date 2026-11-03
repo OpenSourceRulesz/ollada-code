@@ -47,12 +47,12 @@ import type { MachineKind, RecommendRow } from './fitLabels';
 import { findOlladaServe, FIRST_PORT, MAX_PORT, pickPort, probeOllada } from './ports';
 import { gateProposal, ProposalStore } from './proposals';
 import type { Proposal } from './proposals';
-import { CHECKS_PASSED_WARNING, EXPLAIN_PROMPT, FIX_PROMPT, insertPrompt } from './prompts';
+import { CHECKS_PASSED_WARNING, EXPLAIN_PROMPT, FIX_PROMPT, fixRetryPrompt, importsContextBlock, insertPrompt } from './prompts';
 import { pythonCandidates } from './python';
 import type { PythonCandidate } from './python';
 import { replayAvailable, totalSteps } from './replay';
 import type { Snapshots } from './replay';
-import { countChangedLines, planEdit, simpleDiff, stripFences } from './splice';
+import { countChangedLines, isImportOnlyReplacement, planEdit, simpleDiff, stripFences } from './splice';
 import { WaitingHistory } from './waiting';
 import type { ActionKind } from './waiting';
 import { getWebviewHtml } from './webview';
@@ -105,6 +105,10 @@ export function activate(context: vscode.ExtensionContext): void {
   let serveModel = vscode.workspace.getConfiguration('ollada-code').get<string>('model', 'sdar:4b');
   let machineKind: MachineKind = 'cpu';
   const proposals = new ProposalStore();
+  // 0.1.6: the snapshot a Fix proposal was made from, so a Discard can
+  // offer a one-time Retry fix with an instruction against that same
+  // selection. Never written to, never persisted.
+  let lastFixContext: CapturedContext | undefined;
   const snapshotsById = new Map<string, Snapshots>();
   let abortController: AbortController | undefined;
   let lastEditor: vscode.TextEditor | undefined = usableEditor(vscode.window.activeTextEditor) ? vscode.window.activeTextEditor : undefined;
@@ -141,7 +145,10 @@ export function activate(context: vscode.ExtensionContext): void {
   function postContext(): void {
     const ctx = captureContext(editorState());
     const enabled = actionsEnabled(ctx);
-    post('context', { label: chipLabel(ctx), path: ctx?.path ?? '', hasFile: !!ctx, hasSelection: !!ctx?.hasSelection, ...enabled });
+    post('context', {
+      label: chipLabel(ctx), path: ctx?.path ?? '', hasFile: !!ctx, hasSelection: !!ctx?.hasSelection, ...enabled,
+      headerImports: ctx?.headerImports ?? [], headerImportsTruncated: ctx?.headerImportsTruncated ?? false,
+    });
   }
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor((editor) => {
@@ -530,7 +537,10 @@ export function activate(context: vscode.ExtensionContext): void {
     let title: string;
     let shown: string;
     if (action === 'fix') {
-      prompt = `${FIX_PROMPT}\n\n${codeBlock(ctx.selectionText)}`;
+      // 0.1.6: header imports travel with Fix only, labelled as context
+      // so the model does not re-add an import that is already there.
+      const block = importsContextBlock(ctx.fileName, ctx.headerImports, ctx.headerImportsTruncated);
+      prompt = block ? `${FIX_PROMPT}\n\n${block}\n\n${codeBlock(ctx.selectionText)}` : `${FIX_PROMPT}\n\n${codeBlock(ctx.selectionText)}`;
       title = 'Working on a fix';
       shown = 'Fix selection';
     } else if (action === 'explain') {
@@ -554,6 +564,10 @@ export function activate(context: vscode.ExtensionContext): void {
       shown = 'Insert at cursor';
     }
     post('userMessage', { text: shown, contextLabel: ctx.label });
+    // 0.1.6: Fix (one-shot and retry) shares one attempt path, so a
+    // retry goes through the same token warning, waiting timer, model
+    // call, and proposal gate as the original Fix.
+    if (action === 'fix') { await runFixAttempt(ctx, prompt); return; }
     const model = serveModel;
     const estimatedTokens = Math.round(prompt.length / 4);
     if (model === 'sdar:1.7b' && estimatedTokens > 300) {
@@ -585,7 +599,8 @@ export function activate(context: vscode.ExtensionContext): void {
         post('message', { meta: `${ctx.label}, explanation, ${seconds.toFixed(1)} s`, body: clean, isCode: false });
         return;
       }
-      await proposeEdit(action === 'fix' ? 'fix' : 'insert', ctx, clean, seconds, result.snapshots);
+      // Fix returns earlier via runFixAttempt; only explain/insert reach here.
+      await proposeEdit('insert', ctx, clean, seconds, result.snapshots);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         post('hint', { text: 'Cancelled. The model may keep running server-side until it finishes.' });
@@ -598,7 +613,76 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
+  /** One Fix attempt: token warning, waiting timer, model call, proposal. Shared by one-shot Fix and by Retry fix. */
+  async function runFixAttempt(ctx: CapturedContext, prompt: string): Promise<void> {
+    const model = serveModel;
+    const estimatedTokens = Math.round(prompt.length / 4);
+    if (model === 'sdar:1.7b' && estimatedTokens > 300) {
+      const choice = await vscode.window.showWarningMessage(
+        `This selection is long for sdar:1.7b on CPU (about ${estimatedTokens} tokens). It may be slow, and fixes longer than 128 tokens get cut off.`,
+        'Send anyway', 'Cancel',
+      );
+      if (choice !== 'Send anyway') { post('hint', { text: 'Not sent.' }); return; }
+    }
+    abortController = new AbortController();
+    const started = Date.now();
+    const timer = setInterval(() => {
+      const elapsed = (Date.now() - started) / 1000;
+      const range = history.rangeFor('fix', model);
+      const rangeLine = range
+        ? `On this machine, recent fixes with ${model} took ${range.min.toFixed(1)} to ${range.max.toFixed(1)} s. The time shown is wall clock, not progress inside the model.`
+        : undefined;
+      post('waiting', { title: 'Working on a fix', elapsed: `${elapsed.toFixed(1)} s`, rangeLine });
+    }, 500);
+    try {
+      const result = await chatOnce(model, prompt, abortController.signal);
+      const seconds = (Date.now() - started) / 1000;
+      history.record('fix', model, seconds);
+      saveHistory();
+      clearInterval(timer);
+      post('waitingDone', {});
+      await proposeEdit('fix', ctx, stripFences(result.text), seconds, result.snapshots);
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        post('hint', { text: 'Cancelled. The model may keep running server-side until it finishes.' });
+      } else {
+        post('hint', { text: `Ollada error: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    } finally {
+      clearInterval(timer);
+      post('waitingDone', {});
+    }
+  }
+
+  /**
+   * 0.1.6: Fix-with-user-instruction, offered only after a Fix proposal
+   * is Discarded. User-click-bounded, never automatic, never a loop:
+   * one instruction, one new proposal through the normal path. The
+   * retry reuses the original Fix snapshot, so if the file changed
+   * since then it refuses and asks for a fresh selection instead of
+   * splicing stale text.
+   */
+  async function runFixWithInstruction(instruction: string): Promise<void> {
+    const ctx = lastFixContext;
+    if (!ctx || !ctx.hasSelection) {
+      post('hint', { text: 'No discarded Fix to retry. Select the code and Fix again.' });
+      return;
+    }
+    const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === ctx.uri);
+    if (doc && doc.version !== ctx.version) {
+      post('hint', { text: 'The file changed since that Fix, so nothing was sent. Re-select the code and Fix again.' });
+      return;
+    }
+    await detectServe();
+    const plan = planAction('fix', ctx, !!servePort);
+    if (!plan.ok) { post('hint', { text: plan.hint }); return; }
+    post('userMessage', { text: `Retry fix: ${instruction}`, contextLabel: ctx.label });
+    const prompt = fixRetryPrompt(instruction, ctx.selectionText, ctx.fileName, ctx.headerImports, ctx.headerImportsTruncated);
+    await runFixAttempt(ctx, prompt);
+  }
+
   async function proposeEdit(kind: 'fix' | 'insert', ctx: CapturedContext, code: string, seconds: number, snapshots: Snapshots | undefined): Promise<void> {
+    if (kind === 'fix') { lastFixContext = ctx; }
     const edit = planEdit(kind, ctx.fullText, ctx.selStart, ctx.selEnd, ctx.active, code);
     const diff = simpleDiff(ctx.fullText, edit.spliced);
     const changed = countChangedLines(diff);
@@ -612,6 +696,20 @@ export function activate(context: vscode.ExtensionContext): void {
     let warnings: string[] = [];
     let warning = 'No checks for this language yet. Review the change before accepting.';
     let blocked = false;
+    // 0.1.6: an import-only Fix proposal is blocked, even though the
+    // old verifier passes it. A proposal that merely adds imports
+    // inside the selection (without being import-only) warns and
+    // demotes Accept to secondary instead.
+    let importOnly = false;
+    let addsImports = false;
+    if (kind === 'fix') {
+      importOnly = isImportOnlyReplacement(ctx.selectionText, code);
+      if (!importOnly) {
+        const selHasImport = ctx.selectionText.split('\n').some((l) => /^import\s/.test(l.trim()) || /^from\s+\S+\s+import\s/.test(l.trim()));
+        const repHasImport = code.split('\n').some((l) => /^import\s/.test(l.trim()) || /^from\s+\S+\s+import\s/.test(l.trim()));
+        addsImports = !selHasImport && repHasImport;
+      }
+    }
     if (ctx.languageId === 'python' || ctx.path.endsWith('.py')) {
       const py = await findPython();
       if (py) {
@@ -634,6 +732,12 @@ export function activate(context: vscode.ExtensionContext): void {
         warning = 'No Python interpreter found, so checks could not run. Review the change before accepting.';
       }
     }
+    if (!blocked && importOnly) {
+      blocked = true;
+      warning = 'This proposal only adds imports and does not change the selected code, so Accept is turned off. Discard it and try again, or use the retry below to tell the model what to change.';
+    } else if (!blocked && addsImports) {
+      warnings.push('This proposal adds imports inside the selection — check where they land');
+    }
     const { proposal, replacedId } = proposals.create({
       kind, uri: ctx.uri, version: ctx.version, start: edit.start, end: edit.end,
       replacement: edit.replacement, originalText: ctx.fullText, spliced: edit.spliced, blocked,
@@ -647,7 +751,7 @@ export function activate(context: vscode.ExtensionContext): void {
       result: {
         id: proposal.id, meta, time: `${seconds.toFixed(1)} s`, contextLabel: `Sent: ${ctx.label}`,
         diff: diff.map((d) => ({ kind: d.kind, text: d.text })), checks, warnings, warning, blocked,
-        acceptLabel, rejectLabel, acceptPrimary: !blocked && !(checks ?? []).some((c) => !c.pass),
+        acceptLabel, rejectLabel, acceptPrimary: !blocked && !addsImports && !(checks ?? []).some((c) => !c.pass),
         replayAvailable: !!snapshots,
       },
     });
@@ -656,7 +760,7 @@ export function activate(context: vscode.ExtensionContext): void {
   async function acceptProposal(id: string): Promise<void> {
     const p: Proposal | undefined = proposals.get(id);
     if (!p) { post('dismiss', { id, note: 'That proposal is no longer pending. The file was not changed.' }); return; }
-    if (p.blocked) { post('hint', { text: 'This proposal has a syntax error, so it can’t be applied. Discard it.' }); return; }
+    if (p.blocked) { post('hint', { text: 'This proposal is blocked, so it can’t be applied. Discard it.' }); return; }
     const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === p.uri);
     if (!doc || doc.isClosed) {
       proposals.discard(id);
@@ -678,9 +782,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
   function rejectProposal(id: string): void {
     // The proposal was never written to the file, so the file is untouched.
+    // 0.1.6: discarding a Fix offers one retry row against that same
+    // snapshot; discarding an Insert does not.
+    const p = proposals.get(id);
+    const offerRetryFix = p?.kind === 'fix' && !!lastFixContext;
+    const retryContextLabel = offerRetryFix ? lastFixContext?.label : undefined;
     proposals.discard(id);
     snapshotsById.delete(id);
-    post('dismiss', { id, note: 'Discarded. The file was not changed.' });
+    post('dismiss', { id, note: 'Discarded. The file was not changed.', offerRetryFix, retryContextLabel });
   }
 
   async function freeChat(text: string): Promise<void> {
@@ -764,6 +873,12 @@ export function activate(context: vscode.ExtensionContext): void {
       case 'cancel': abortController?.abort(); break;
       case 'accept': void acceptProposal(String(message.id ?? '')); break;
       case 'reject': rejectProposal(String(message.id ?? '')); break;
+      case 'retryFix': {
+        const instruction = String(message.text ?? '').trim();
+        if (!instruction) { post('hint', { text: 'Type an instruction for the retry fix first.' }); break; }
+        void runFixWithInstruction(instruction);
+        break;
+      }
       case 'watch': {
         const snaps = snapshotsById.get(String(message.id ?? ''));
         if (!snaps) { break; }
