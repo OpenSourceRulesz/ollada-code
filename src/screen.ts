@@ -1,17 +1,15 @@
-// Pure screen-choice and model-button logic, testable without VS Code.
+// Pure panel-state and model-button logic, testable without VS Code.
 //
-// The panel has two screens, Setup and Chat, and only one is visible.
-// The rule is: force Setup (the chat screen's Setup button) always wins;
-// otherwise Chat wins when serve is running, Setup wins when it is not.
-// refreshSetup() implements this by posting 'setup' first, then 'ready'
-// (which shows Chat) only when shouldShowChat() is true, so the last
-// message — and therefore the visible screen — is always the right one.
+// 0.1.4 dogfood fix: Chat used to be hidden until every Setup step
+// passed. Chat is now always visible; Setup is a collapsible section at
+// the top of the same panel. It starts open while something still needs
+// doing (not serving) and starts collapsed once serve is reachable. The
+// Setup checks themselves are unchanged — moved, not deleted.
 import { isRedLabel } from './fitLabels';
 import type { FitLabel } from './fitLabels';
 
-export function shouldShowChat(serving: boolean, forceSetup: boolean): boolean {
-  if (forceSetup) { return false; }
-  return serving;
+export function setupOpenByDefault(serving: boolean): boolean {
+  return !serving;
 }
 
 export function showDownloadButton(label: FitLabel, downloaded: boolean): boolean {

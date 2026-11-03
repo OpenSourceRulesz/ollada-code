@@ -22,3 +22,29 @@ test('simpleDiff counts changed lines for the off-by-one fix', () => {
   const diff = simpleDiff(before, after);
   assert.equal(countChangedLines(diff), 2, 'one removed + one added');
 });
+
+import { planEdit } from '../src/splice';
+
+const BROKEN = 'def greet(name)\n    print(f"Hello, {name}!")\n';
+const FIXED = 'def greet(name):\n    print(f"Hello, {name}!")';
+
+test('Insert with code selected replaces the selection: no duplicate function', () => {
+  const e = planEdit('insert', BROKEN, 0, BROKEN.length, BROKEN.length, FIXED);
+  assert.equal(e.spliced, FIXED + '\n', 'the selection is replaced and its trailing newline kept');
+  assert.equal(e.spliced.split('def greet').length - 1, 1, 'exactly one def greet');
+  assert.ok(!e.spliced.includes('def greet(name)\n'), 'the broken line is gone');
+});
+
+test('Fix replaces exactly the selection, even a partial one', () => {
+  const firstLine = 'def greet(name)'.length;
+  const e = planEdit('fix', BROKEN, 0, firstLine, firstLine, 'def greet(name):');
+  assert.equal(e.spliced, 'def greet(name):\n    print(f"Hello, {name}!")\n');
+});
+
+test('Insert with no selection writes at the cursor and keeps the rest', () => {
+  const end = BROKEN.length;
+  const e = planEdit('insert', BROKEN, end, end, end, 'greet("x")');
+  assert.equal(e.spliced, BROKEN + 'greet("x")\n');
+  assert.equal(e.start, end);
+  assert.equal(e.end, end);
+});

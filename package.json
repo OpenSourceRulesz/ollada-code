@@ -6,7 +6,8 @@
     "onCommand:ollada-code.fixSelection",
     "onCommand:ollada-code.insertAtCursor",
     "onCommand:ollada-code.startServe",
-    "onCommand:ollada-code.checkAgain"
+    "onCommand:ollada-code.checkAgain",
+    "onCommand:ollada-code.changePython"
   ],
   "categories": [
     "AI",
@@ -37,6 +38,10 @@
       {
         "command": "ollada-code.checkAgain",
         "title": "Ollada: Check Again"
+      },
+      {
+        "command": "ollada-code.changePython",
+        "title": "Ollada: Change Python"
       }
     ],
     "configuration": {
@@ -104,7 +109,7 @@
     "watch": "tsc -watch -p ./",
     "bundle": "node esbuild.js"
   },
-  "version": "0.1.3",
+  "version": "0.1.4",
   "repository": {
     "type": "git",
     "url": "https://github.com/OpenSourceRulesz/ollada-code.git"

@@ -13,51 +13,57 @@
 // - All model calls are POST /api/chat on 127.0.0.1:<port> only.
 //   Never localhost, never /v1/completions (not in stock 0.3.4).
 // - Fix prompt is verbatim (see prompts.ts). Accept never automatic.
-// - Port rule: try 11435, then 11436, 11437, and so on, say which in
-//   the UI, never kill the process holding a port.
+// - Port rule: reuse an ollada serve that already answers; otherwise try
+//   11435, then 11436, 11437, and so on, say which in the UI, and never
+//   kill the process holding a port.
 // - Setup never runs pip/pull/serve without a click. pip is never run
 //   by the extension at all; it only shows the command with a copy button.
 // - Install: CPU `pip install "ollada[cpu,server]"`, GPU
 //   `pip install "ollada[gpu,server]"`, everywhere.
 // - Minimum serve version 0.3.4 for Setup/Chat/Explain/Fix/Insert.
-//   Replay needs a future serve with snapshots; until then the button
-//   is disabled and frames are never synthesized.
+//   Replay needs a future serve with snapshots; until then there is no
+//   Replay button and frames are never synthesized.
 // - Checks PASS is never presented as correct (see prompts.ts warning).
+//   A syntax error in the proposed file turns Accept / Insert off.
+//
+// 0.1.4 dogfood fixes (see the changelog for the full list):
+// - Chat lives in the Ollada sidebar view, not a Beside editor panel.
+//   A Beside panel takes over the editor area, so clicking it left no
+//   active text editor and the extension said "Open a file first." The
+//   extension also tracks the last real text editor and snapshots its
+//   file and selection at click time, for files inside or outside the
+//   workspace.
 import * as childProcess from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { CACHE_SCRIPT, parseCacheResult } from './cacheScript';
 import { runChecks } from './checks';
+import { actionsEnabled, captureContext, chipLabel, planAction } from './context';
+import type { CapturedContext, RawEditorState } from './context';
 import { fitDotColor, fitLabel, NEMOTRON_DETAIL, recommendedIndex } from './fitLabels';
 import type { MachineKind, RecommendRow } from './fitLabels';
-import { pickPort } from './ports';
+import { findOlladaServe, FIRST_PORT, MAX_PORT, pickPort, probeOllada } from './ports';
+import { gateProposal, ProposalStore } from './proposals';
+import type { Proposal } from './proposals';
 import { CHECKS_PASSED_WARNING, EXPLAIN_PROMPT, FIX_PROMPT, insertPrompt } from './prompts';
+import { pythonCandidates } from './python';
+import type { PythonCandidate } from './python';
 import { replayAvailable, totalSteps } from './replay';
 import type { Snapshots } from './replay';
-import { countChangedLines, simpleDiff, spliceInsert, spliceSelection, stripFences } from './splice';
+import { countChangedLines, planEdit, simpleDiff, stripFences } from './splice';
 import { WaitingHistory } from './waiting';
 import type { ActionKind } from './waiting';
 import { getWebviewHtml } from './webview';
-import { shouldShowChat, showDownloadButton } from './screen';
+import { showDownloadButton } from './screen';
 
 const MIN_VERSION = '0.3.4';
+const VIEW_ID = 'ollada-code.chat';
 
-interface SetupStep { icon: string; title: string; detail: string; command?: string; }
+interface SetupStep { icon: string; title: string; detail: string; command?: string; action?: 'changePython'; }
 interface ModelRowView { model: string; label: string; detail: string; button: boolean; downloaded: boolean; recommended: boolean; dot: string; }
-
-interface PendingEdit {
-  kind: 'fix' | 'insert' | 'explain';
-  uri: vscode.Uri;
-  version: number;
-  startOffset: number;
-  endOffset: number;
-  originalText: string;
-  newText: string;
-  spliced: string;
-  model: string;
-  seconds: number;
-  snapshots?: Snapshots;
-}
+interface FoundPython { path: string; source: string; hasOllada: boolean; }
 
 function compareVersions(a: string, b: string): number {
   const pa = a.split('.').map((x) => parseInt(x, 10) || 0);
@@ -68,9 +74,9 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-function runCommand(cmd: string, args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
+function runCommand(cmd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
-    const child = childProcess.spawn(cmd, args, { shell: false });
+    const child = childProcess.spawn(cmd, args, { shell: false, env: env ?? process.env });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += String(d); });
@@ -80,31 +86,30 @@ function runCommand(cmd: string, args: string[]): Promise<{ stdout: string; stde
   });
 }
 
-async function httpJson(port: number, pathName: string, init?: RequestInit): Promise<{ status: number; body: unknown }> {
-  // fetch is available in the VS Code extension host (Node 20+).
-  // Every call uses 127.0.0.1, never localhost (managed-PC proxy).
-  const response = await fetch(`http://127.0.0.1:${port}${pathName}`, init);
-  const text = await response.text();
-  let body: unknown = text;
-  try { body = JSON.parse(text); } catch { /* keep text */ }
-  return { status: response.status, body };
+function usableEditor(editor: vscode.TextEditor | undefined): editor is vscode.TextEditor {
+  if (!editor || editor.document.isClosed) { return false; }
+  const scheme = editor.document.uri.scheme;
+  return scheme === 'file' || scheme === 'untitled';
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  const output = vscode.window.createOutputChannel('Ollada Serve');
+  const output = vscode.window.createOutputChannel('Ollada');
   context.subscriptions.push(output);
   const history = WaitingHistory.fromJSON(context.globalState.get('ollada-code.waitingRuns'));
   const saveHistory = () => { void context.globalState.update('ollada-code.waitingRuns', history.toJSON()); };
 
-  let panel: vscode.WebviewPanel | undefined;
-  let currentWebview: vscode.Webview | undefined;
+  let view: vscode.WebviewView | undefined;
   let serveChild: childProcess.ChildProcess | undefined;
   let servePort: number | undefined;
+  let serveReused = false;
   let serveModel = vscode.workspace.getConfiguration('ollada-code').get<string>('model', 'sdar:1.7b');
-  let pending: PendingEdit | undefined;
+  let machineKind: MachineKind = 'cpu';
+  const proposals = new ProposalStore();
+  const snapshotsById = new Map<string, Snapshots>();
   let abortController: AbortController | undefined;
-  let lastSnapshots: Snapshots | undefined;
-  let lastResultMeta = '';
+  let lastEditor: vscode.TextEditor | undefined = usableEditor(vscode.window.activeTextEditor) ? vscode.window.activeTextEditor : undefined;
+  let pythonCache: FoundPython | undefined;
+  let refreshing: Promise<void> | undefined;
 
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
   statusBar.text = 'Ollada: not running';
@@ -113,51 +118,133 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(statusBar);
 
   function post(type: string, data: Record<string, unknown> = {}): void {
-    void currentWebview?.postMessage({ type, ...data });
-  }
-  function setStatus(text: string): void {
-    statusBar.text = text;
-    post('status', { status: text });
+    void view?.webview.postMessage({ type, ...data });
   }
 
-  async function findPython(): Promise<string | undefined> {
-    const configured = vscode.workspace.getConfiguration('ollada-code').get<string>('pythonPath', '');
-    if (configured) { return configured; }
-    // Python extension API first, per spec 6.1, guarded: the extension
-    // may not be installed, and its API shape is accessed dynamically.
+  // ---------- editor context ----------
+  function editorState(): RawEditorState | undefined {
+    const editor = usableEditor(vscode.window.activeTextEditor) ? vscode.window.activeTextEditor : lastEditor;
+    if (!usableEditor(editor)) { return undefined; }
+    const doc = editor.document;
+    const sel = editor.selection;
+    return {
+      path: doc.uri.scheme === 'file' ? doc.uri.fsPath : doc.fileName,
+      uri: doc.uri.toString(),
+      languageId: doc.languageId,
+      version: doc.version,
+      fullText: doc.getText(),
+      selStart: doc.offsetAt(sel.start),
+      selEnd: doc.offsetAt(sel.end),
+      active: doc.offsetAt(sel.active),
+    };
+  }
+  function postContext(): void {
+    const ctx = captureContext(editorState());
+    const enabled = actionsEnabled(ctx);
+    post('context', { label: chipLabel(ctx), path: ctx?.path ?? '', hasFile: !!ctx, hasSelection: !!ctx?.hasSelection, ...enabled });
+  }
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      // Focus moving to the Ollada view, the Output panel or a webview
+      // reports no text editor; keep the last real one.
+      if (usableEditor(editor)) { lastEditor = editor; }
+      postContext();
+    }),
+    vscode.window.onDidChangeTextEditorSelection((e) => {
+      if (usableEditor(e.textEditor)) { lastEditor = e.textEditor; postContext(); }
+    }),
+    vscode.workspace.onDidCloseTextDocument((doc) => {
+      if (lastEditor && lastEditor.document === doc) { lastEditor = undefined; postContext(); }
+    }),
+    vscode.workspace.onDidChangeTextDocument((e) => {
+      if (lastEditor && e.document === lastEditor.document) { postContext(); }
+    }),
+  );
+
+  // ---------- Python ----------
+  async function pythonExtensionPath(): Promise<string | undefined> {
     try {
       const pyExt = vscode.extensions.getExtension('ms-python.python');
       const api = pyExt?.exports as { environments?: { getActiveEnvironmentPath?: () => Promise<{ path?: string }> } } | undefined;
-      const envPath = await api?.environments?.getActiveEnvironmentPath?.();
-      if (envPath?.path) { return envPath.path; }
-    } catch { /* fall through to .venv / PATH */ }
-    for (const folder of vscode.workspace.workspaceFolders ?? []) {
-      const venv = path.join(folder.uri.fsPath, '.venv', 'Scripts', 'python.exe');
-      if (fs.existsSync(venv)) { return venv; }
-      const venvPosix = path.join(folder.uri.fsPath, '.venv', 'bin', 'python');
-      if (fs.existsSync(venvPosix)) { return venvPosix; }
-    }
-    for (const candidate of ['python', 'python3']) {
-      const found = await runCommand(process.platform === 'win32' ? 'where' : 'which', [candidate]);
-      if (found.code === 0 && found.stdout.trim()) { return candidate; }
-    }
-    return undefined;
+      return (await api?.environments?.getActiveEnvironmentPath?.())?.path;
+    } catch { return undefined; }
   }
+  function childDirs(dir: string): string[] {
+    try {
+      return fs.readdirSync(dir, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && !d.name.startsWith('.') && d.name !== 'node_modules')
+        .slice(0, 50)
+        .map((d) => path.join(dir, d.name));
+    } catch { return []; }
+  }
+  async function listCandidates(): Promise<PythonCandidate[]> {
+    return pythonCandidates({
+      configured: vscode.workspace.getConfiguration('ollada-code').get<string>('pythonPath', '') || undefined,
+      pythonExtension: await pythonExtensionPath(),
+      folders: (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
+      childDirs,
+      exists: (p) => fs.existsSync(p),
+      join: path.join,
+    });
+  }
+  async function canImportOllada(python: string): Promise<boolean> {
+    const res = await runCommand(python, ['-c', 'import ollada']);
+    return res.code === 0;
+  }
+  /**
+   * The Python whose ollada the extension uses. A configured path always
+   * wins (the user chose it). Otherwise the first candidate that can
+   * import ollada; if none can, the first one that runs, so Setup can say
+   * exactly which Python it checked.
+   */
+  async function findPython(): Promise<FoundPython | undefined> {
+    if (pythonCache) { return pythonCache; }
+    const candidates = await listCandidates();
+    const configured = candidates.find((c) => c.source.startsWith('the ollada-code.pythonPath'));
+    if (configured) {
+      pythonCache = { ...configured, hasOllada: await canImportOllada(configured.path) };
+      return pythonCache;
+    }
+    let firstRunnable: PythonCandidate | undefined;
+    for (const c of candidates) {
+      const runs = await runCommand(c.path, ['--version']);
+      if (runs.code !== 0) { continue; }
+      firstRunnable = firstRunnable ?? c;
+      if (await canImportOllada(c.path)) { pythonCache = { ...c, hasOllada: true }; return pythonCache; }
+    }
+    if (firstRunnable) { pythonCache = { ...firstRunnable, hasOllada: false }; }
+    return pythonCache;
+  }
+  async function changePython(): Promise<void> {
+    const candidates = (await listCandidates()).filter((c) => !c.source.startsWith('the ollada-code.pythonPath'));
+    const items: Array<vscode.QuickPickItem & { value?: string; browse?: boolean; clear?: boolean }> = [
+      ...candidates.map((c) => ({ label: c.path, description: c.source, value: c.path })),
+      { label: 'Browse for a Python executable…', browse: true },
+      { label: 'Use automatic detection', description: 'clears the ollada-code.pythonPath setting', clear: true },
+    ];
+    const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Which Python has ollada installed? (usually the .venv python)' });
+    if (!picked) { return; }
+    let value: string | undefined;
+    if (picked.clear) { value = ''; }
+    else if (picked.browse) {
+      const uris = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: 'Use this Python', title: 'Pick the Python that has ollada installed' });
+      if (!uris || uris.length === 0) { return; }
+      value = uris[0].fsPath;
+    } else { value = picked.value; }
+    await vscode.workspace.getConfiguration('ollada-code').update('pythonPath', value, vscode.ConfigurationTarget.Global);
+    pythonCache = undefined;
+    void refreshSetup();
+  }
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
+    if (e.affectsConfiguration('ollada-code.pythonPath')) { pythonCache = undefined; }
+    if (e.affectsConfiguration('ollada-code.model')) { serveModel = vscode.workspace.getConfiguration('ollada-code').get<string>('model', 'sdar:1.7b'); }
+  }));
 
   function checksScriptPath(): string {
     return path.join(context.extensionPath, 'python', 'checks.py');
   }
 
   async function getOlladaVersion(python: string): Promise<string | undefined> {
-    if (servePort) {
-      try {
-        const res = await httpJson(servePort, '/api/version');
-        if (res.status === 200 && res.body && typeof res.body === 'object') {
-          const v = (res.body as { version?: unknown }).version;
-          if (typeof v === 'string') { return v; }
-        }
-      } catch { /* fall through to CLI */ }
-    }
     const res = await runCommand(python, ['-m', 'ollada.cli', '--version']);
     const match = res.stdout.match(/ollada\s+([\d.]+)/i) || res.stderr.match(/ollada\s+([\d.]+)/i);
     return match ? match[1] : undefined;
@@ -204,208 +291,201 @@ export function activate(context: vscode.ExtensionContext): void {
     return { kind, rows, raw };
   }
 
-  // Downloaded check, non-downloading and no guessed cache path.
-  // ollada has no list/show flag for this: list prints the shelf,
-  // show prints the recipe and fit. The shelf's own cache test is in
-  // its rm command (cli.py): huggingface_hub.scan_cache_dir() repos
-  // matched against each recipe's source. This runs exactly that test
-  // (recipe sources from ollada.recipes.load_catalog, cache from
-  // scan_cache_dir, which honours HF_HOME) in one python invocation
-  // for the whole shelf. Any failure returns an empty set, so the UI
-  // falls back to showing Download — it never claims Downloaded
-  // without a check. A repo present in the cache counts as downloaded,
-  // the same definition the shelf's rm command uses; pull is
-  // cache-first, so a partial cache is completed by pull, not redownloaded.
-  async function getDownloadedModels(python: string): Promise<Set<string>> {
-    const script = [
-      'import sys',
-      'try:',
-      '    from huggingface_hub import scan_cache_dir',
-      '    from ollada.recipes import load_catalog',
-      '    cached = {r.repo_id for r in list(scan_cache_dir().repos)}',
-      '    for rec in load_catalog():',
-      '        print(rec.name + " " + ("cached" if rec.source in cached else "missing"))',
-      'except Exception:',
-      '    sys.exit(1)',
-    ].join('\n');
-    const res = await runCommand(python, ['-c', script]);
-    if (res.code !== 0) { return new Set(); }
-    const out = new Set<string>();
-    for (const line of res.stdout.split('\n')) {
-      const m = line.match(/^(\S+)\s+cached$/);
-      if (m) { out.add(m[1]); }
+  /** Cached models, from the same test ollada's rm command uses. See cacheScript.ts. */
+  async function getDownloadedModels(python: string): Promise<{ cached: Set<string>; note: string }> {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ollada-code-cache-'));
+    const file = path.join(dir, 'cache_check.py');
+    try {
+      fs.writeFileSync(file, CACHE_SCRIPT, 'utf-8');
+      const res = await runCommand(python, [file]);
+      const result = parseCacheResult(res.stdout, res.stderr);
+      if (!result.ok) {
+        output.appendLine(`Model cache check failed with ${python}: ${result.error ?? 'unknown error'}`);
+        return {
+          cached: new Set(),
+          note: `Couldn’t check the model cache${result.cacheDir ? ` at ${result.cacheDir}` : ''}: ${result.error ?? 'unknown error'}. Showing Download for every model; pull reuses anything already cached.`,
+        };
+      }
+      if (result.missingCache) {
+        return { cached: result.cached, note: `No Hugging Face cache found at ${result.cacheDir}. If your models live somewhere else (HF_HOME), start VS Code from a terminal where HF_HOME is set.` };
+      }
+      return { cached: result.cached, note: `Checked the model cache at ${result.cacheDir}.` };
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
-    return out;
   }
 
-  async function buildSetup(): Promise<{ steps: SetupStep[]; models: ModelRowView[]; note: string; ready: boolean; kind: MachineKind }> {
-    const python = await findPython();
-    const steps: SetupStep[] = [];
-    let kind: MachineKind = 'cpu';
-    let models: ModelRowView[] = [];
-    let ready = false;
-    let note = '';
-    if (!python) {
-      steps.push({ icon: '⚠', title: 'Python 3.12 to 3.14', detail: 'No Python interpreter found. Install Python 3.12 to 3.14, then Check again.' });
-      return { steps, models, note, ready, kind };
+  // ---------- serve ----------
+  /** Reuse an ollada serve that already answers (ours or one started by hand) before ever offering a new one. */
+  async function detectServe(): Promise<void> {
+    if (servePort && await probeOllada(servePort, 1500)) { return; }
+    if (servePort && !serveChild) { servePort = undefined; serveReused = false; }
+    const preferred = vscode.workspace.getConfiguration('ollada-code').get<number>('servePort', 0);
+    const start = preferred > 0 ? preferred : FIRST_PORT;
+    const found = await findOlladaServe(start, Math.min(start + 9, MAX_PORT));
+    if (found) {
+      servePort = found.port;
+      serveReused = !serveChild;
+      output.appendLine(`Using existing ollada serve ${found.version} on 127.0.0.1:${found.port}.`);
     }
-    const versionRes = await runCommand(python, ['--version']);
-    const versionText = (versionRes.stdout + versionRes.stderr).trim();
-    const vm = versionText.match(/Python\s+(\d+)\.(\d+)\.(\d+)/);
-    if (!vm) {
-      steps.push({ icon: '⚠', title: 'Python 3.12 to 3.14', detail: `Could not read a Python version from: ${versionText}` });
+  }
+
+  async function buildSetup(): Promise<Record<string, unknown>> {
+    const steps: SetupStep[] = [];
+    let models: ModelRowView[] = [];
+    let cacheNote = '';
+    await detectServe();
+    const py = await findPython();
+    if (!py) {
+      steps.push({ icon: '⚠', title: 'Python 3.12 to 3.14', detail: 'No Python interpreter found. Install Python 3.12 to 3.14, or pick one with Change Python, then Check again.', action: 'changePython' });
     } else {
-      const major = parseInt(vm[1], 10);
-      const minor = parseInt(vm[2], 10);
-      if (major !== 3 || minor > 14) {
-        steps.push({
-          icon: '⚠', title: 'Python 3.15 found. Ollada needs 3.12 to 3.14.',
-          detail: 'On 3.15, pip quietly installs ollada 0.1.0, which doesn’t have sdar:1.7b. Python 3.12 is recommended.',
-        });
-      } else if (major !== 3 || minor < 12) {
-        steps.push({ icon: '⚠', title: `Python ${vm[1]}.${vm[2]} found. Ollada needs 3.12 to 3.14.`, detail: 'Python 3.12 is recommended.' });
+      const versionRes = await runCommand(py.path, ['--version']);
+      const versionText = (versionRes.stdout + versionRes.stderr).trim();
+      const vm = versionText.match(/Python\s+(\d+)\.(\d+)\.(\d+)/);
+      const where = `Checking ${py.path} (from ${py.source}).`;
+      if (!vm) {
+        steps.push({ icon: '⚠', title: 'Python 3.12 to 3.14', detail: `Could not read a Python version from: ${versionText}. ${where}`, action: 'changePython' });
       } else {
-        steps.push({ icon: '✓', title: 'Python 3.12 to 3.14', detail: `Found Python ${vm[1]}.${vm[2]} in ${python}` });
+        const major = parseInt(vm[1], 10);
+        const minor = parseInt(vm[2], 10);
+        if (major !== 3 || minor > 14) {
+          steps.push({ icon: '⚠', title: `Python ${vm[1]}.${vm[2]} found. Ollada needs 3.12 to 3.14.`, detail: `On 3.15, pip quietly installs ollada 0.1.0, which doesn’t have sdar:1.7b. Python 3.12 is recommended. ${where}`, action: 'changePython' });
+        } else if (minor < 12) {
+          steps.push({ icon: '⚠', title: `Python ${vm[1]}.${vm[2]} found. Ollada needs 3.12 to 3.14.`, detail: `Python 3.12 is recommended. ${where}`, action: 'changePython' });
+        } else {
+          steps.push({ icon: '✓', title: `Python ${vm[1]}.${vm[2]}`, detail: where, action: 'changePython' });
+        }
+      }
+      const recommend = py.hasOllada ? await getRecommend(py.path) : undefined;
+      machineKind = recommend?.kind ?? machineKind;
+      const installCmd = machineKind === 'gpu' ? 'pip install "ollada[gpu,server]"' : 'pip install "ollada[cpu,server]"';
+      const olladaVersion = py.hasOllada ? await getOlladaVersion(py.path) : undefined;
+      if (!py.hasOllada || !olladaVersion) {
+        steps.push({
+          icon: '⚠', title: 'ollada isn’t installed for this Python',
+          detail: `Run this in a terminal with that Python’s venv active, or pick the Python that has ollada with Change Python. Ollada won’t run pip for you.`,
+          command: installCmd,
+        });
+      } else if (compareVersions(olladaVersion, MIN_VERSION) < 0) {
+        steps.push({
+          icon: '⚠', title: `ollada ${olladaVersion} found. This extension needs 0.3.4 or newer.`,
+          detail: 'If you’re on Python 3.15, that’s why: switch to 3.12 to 3.14 first. Otherwise, upgrade:',
+          command: machineKind === 'gpu' ? 'pip install -U "ollada[gpu,server]"' : 'pip install -U "ollada[cpu,server]"',
+        });
+      } else {
+        steps.push({ icon: '✓', title: `ollada ${olladaVersion}`, detail: `Installed for ${py.path}.` });
+        const serverRes = await runCommand(py.path, ['-c', 'import fastapi, uvicorn']);
+        if (serverRes.code !== 0 && !servePort) {
+          steps.push({ icon: '⚠', title: 'ollada serve needs the server extra', detail: 'Run the command below in the same venv, then Check again.', command: installCmd });
+        }
+      }
+      if (recommend) {
+        const recIndex = recommendedIndex(recommend.rows, machineKind);
+        const cache = olladaVersion ? await getDownloadedModels(py.path) : { cached: new Set<string>(), note: '' };
+        cacheNote = cache.note;
+        models = recommend.rows.map((row, i) => {
+          const label = fitLabel(row, machineKind);
+          const isDownloaded = cache.cached.has(row.model);
+          return {
+            model: row.model, label, detail: row.detail ?? '',
+            button: showDownloadButton(label, isDownloaded),
+            downloaded: isDownloaded, recommended: i === recIndex, dot: fitDotColor(label),
+          };
+        });
+        steps.push({ icon: '•', title: 'Pick a model', detail: 'From ollada recommend, for this machine.' });
       }
     }
-    // Server extra check: FastAPI + uvicorn must import.
-    const serverRes = await runCommand(python, ['-c', 'import fastapi, uvicorn']);
-    const serverMissing = serverRes.code !== 0;
-    const olladaVersion = await getOlladaVersion(python);
-    // Machine kind first: the install pill (cpu,server vs gpu,server)
-    // depends on it, and recommend is the source of that kind.
-    const recommend = await getRecommend(python);
-    kind = recommend.kind;
-    const installCmd = kind === 'gpu' ? 'pip install "ollada[gpu,server]"' : 'pip install "ollada[cpu,server]"';
-    if (!olladaVersion) {
-      steps.push({
-        icon: '⚠', title: 'ollada isn’t installed in .venv',
-        detail: 'Run this in a terminal with .venv active. Ollada won’t run pip for you.',
-        command: installCmd,
-      });
-    } else if (compareVersions(olladaVersion, MIN_VERSION) < 0) {
-      steps.push({
-        icon: '⚠', title: `ollada ${olladaVersion} found. This extension needs 0.3.4 or newer.`,
-        detail: 'If you’re on Python 3.15, that’s why: switch to 3.12 to 3.14 first. Otherwise, upgrade:',
-        command: kind === 'gpu' ? 'pip install -U "ollada[gpu,server]"' : 'pip install -U "ollada[cpu,server]"',
-      });
-    } else {
-      steps.push({ icon: '✓', title: `ollada ${MIN_VERSION}`, detail: `Found in ${python}` });
-    }
-    if (serverMissing && olladaVersion) {
-      steps.push({
-        icon: '⚠', title: 'ollada serve needs the server extra',
-        detail: 'Run the command below in the same .venv, then Check again.',
-        command: installCmd,
-      });
-    }
-    const recIndex = recommendedIndex(recommend.rows, kind);
-    const downloaded = olladaVersion ? await getDownloadedModels(python) : new Set<string>();
-    models = recommend.rows.map((row, i) => {
-      const label = fitLabel(row, kind);
-      const isDownloaded = downloaded.has(row.model);
-      return {
-        model: row.model,
-        label,
-        detail: row.detail ?? '',
-        button: showDownloadButton(label, isDownloaded),
-        downloaded: isDownloaded,
-        recommended: i === recIndex,
-        dot: fitDotColor(label),
-      };
-    });
-    steps.push({ icon: '•', title: 'Pick a model', detail: 'From ollada recommend, for this machine.' });
+    let serveBanner = '';
+    let serveButton = 'Start serve';
+    let canStartServe = !!py?.hasOllada;
     if (servePort) {
-      steps.push({ icon: '✓', title: 'Start ollada serve', detail: `Serving ${serveModel} on ${servePort}` });
-      ready = true;
+      steps.push({ icon: '✓', title: 'ollada serve', detail: serveReused ? `Using existing serve on ${servePort}.` : `Serving on ${servePort}.` });
     } else {
       const picked = await pickPort(vscode.workspace.getConfiguration('ollada-code').get<number>('servePort', 0));
-      steps.push({
-        icon: '•', title: 'Start ollada serve',
-        detail: picked.skipped.length > 0
-          ? `Port ${picked.skipped.join(', ')} ${picked.skipped.length === 1 ? 'is' : 'are'} in use by another app, so Ollada will use ${picked.port}.`
-          : `Ollada will use port ${picked.port}.`,
-      });
-      note = `Start serve on ${picked.port} when you are ready. Nothing downloads or starts until you click.`;
+      const skippedText = picked.skipped.length > 0
+        ? `Port ${picked.skipped.join(', ')} ${picked.skipped.length === 1 ? 'is' : 'are'} in use by another app (not an ollada serve), so Ollada will use ${picked.port}.`
+        : `Ollada will use port ${picked.port}.`;
+      steps.push({ icon: '•', title: 'Start ollada serve', detail: skippedText });
+      serveBanner = `Serve isn’t running. ${skippedText}`;
+      serveButton = `Start serve on ${picked.port}`;
+      canStartServe = canStartServe && !serveChild;
     }
-    return { steps, models, note, ready, kind };
+    const kindText = machineKind === 'cpu' ? 'CPU' : 'GPU';
+    const headerStatus = servePort
+      ? `${serveModel} on ${kindText}, serve on ${servePort}${serveReused ? ' (existing)' : ''}`
+      : 'Serve isn’t running';
+    return { steps, models, cacheNote, serving: !!servePort, serveBanner, serveButton, canStartServe, headerStatus };
   }
 
-  // Single source of screen choice. 'setup' is always posted first;
-  // 'ready' (which shows Chat in the webview) is posted only after it,
-  // and only when serve is running and Setup was not forced. That
-  // ordering is the fix: previously startServe posted 'ready' and then
-  // refreshSetup posted 'setup' seconds later, so Setup always won
-  // and Chat was unreachable. forceSetup=true is the chat screen's
-  // Setup button: it shows Setup again without touching serve.
-  async function refreshSetup(forceSetup = false): Promise<void> {
-    const setup = await buildSetup();
-    post('setup', { steps: setup.steps, models: setup.models, note: setup.note });
-    if (setup.ready) {
-      // Status bar keeps the port; the panel header gets the mockup
-      // v2 serving line (green dot + model + machine kind), rendered
-      // with a green dot by the webview's 'ready' handler.
-      setStatus(`Ollada: serving ${serveModel} on ${servePort}`);
-      if (shouldShowChat(setup.ready, forceSetup)) {
-        post('ready', { status: `● ${serveModel} on ${setup.kind === 'cpu' ? 'CPU' : 'GPU'}` });
+  let refreshAgain = false;
+  async function refreshSetup(): Promise<void> {
+    // One refresh at a time; a request that arrives mid-refresh runs once
+    // more afterwards, so the panel never keeps a stale Setup.
+    if (refreshing) { refreshAgain = true; return refreshing; }
+    refreshing = (async () => {
+      try {
+        do {
+          refreshAgain = false;
+          const setup = await buildSetup();
+          post('setup', setup);
+          statusBar.text = servePort ? `Ollada: serving on ${servePort}${serveReused ? ' (existing)' : ''}` : 'Ollada: not running';
+        } while (refreshAgain);
+      } finally {
+        refreshing = undefined;
       }
-    }
+    })();
+    return refreshing;
   }
 
   async function startServe(): Promise<void> {
-    const python = await findPython();
-    if (!python) {
+    await detectServe();
+    if (servePort) {
+      // Never start a second server when one already answers.
+      void refreshSetup();
+      return;
+    }
+    const py = await findPython();
+    if (!py) {
       void vscode.window.showWarningMessage('Ollada: no Python interpreter found. Check Setup first.');
       return;
     }
-    if (serveChild) {
-      void vscode.window.showInformationMessage(`Ollada serve is already running on ${servePort}.`);
-      return;
-    }
-    const preferred = vscode.workspace.getConfiguration('ollada-code').get<number>('servePort', 0);
-    const picked = await pickPort(preferred);
+    if (serveChild) { return; }
+    const picked = await pickPort(vscode.workspace.getConfiguration('ollada-code').get<number>('servePort', 0));
     const args = ['-m', 'ollada.cli', 'serve', '--host', '127.0.0.1', '--port', String(picked.port)];
-    output.appendLine(`Starting: ${python} ${args.join(' ')}`);
+    output.appendLine(`Starting: ${py.path} ${args.join(' ')}`);
     output.show(true);
-    serveChild = childProcess.spawn(python, args, { shell: false });
+    serveChild = childProcess.spawn(py.path, args, { shell: false });
     serveChild.stdout?.on('data', (d) => output.append(String(d)));
     serveChild.stderr?.on('data', (d) => output.append(String(d)));
     serveChild.on('exit', (code) => {
       output.appendLine(`Ollada serve exited with code ${code}.`);
       serveChild = undefined;
-      servePort = undefined;
-      setStatus('Ollada: not running');
+      if (!serveReused) { servePort = undefined; }
       void refreshSetup();
     });
-    // Poll /health until it answers, up to 30 seconds.
     for (let i = 0; i < 30; i++) {
       await new Promise((r) => setTimeout(r, 1000));
       if (!serveChild) { return; }
-      try {
-        const res = await httpJson(picked.port, '/health');
-        if (res.status === 200) {
-          servePort = picked.port;
-          setStatus(`Ollada: serving ${serveModel} on ${servePort}`);
-          // No premature post('ready') here: refreshSetup posts setup
-          // first, then ready, so Chat is the final screen.
-          void refreshSetup();
-          return;
-        }
-      } catch { /* not up yet */ }
+      if (await probeOllada(picked.port)) {
+        servePort = picked.port;
+        serveReused = false;
+        void refreshSetup();
+        return;
+      }
     }
     void vscode.window.showWarningMessage(
       `Ollada: could not reach serve on ${picked.port}. It may have stopped, or the server extra may be missing. ` +
-      `Fallback command (copy it into a terminal with .venv active): ${python} -m ollada.cli serve --host 127.0.0.1 --port ${picked.port}`,
+      `Fallback command (copy it into a terminal with the venv active): ${py.path} -m ollada.cli serve --host 127.0.0.1 --port ${picked.port}`,
     );
   }
 
-  async function chatOnce(model: string, prompt: string, signal: AbortSignal): Promise<{ text: string; snapshots?: Snapshots; raw: unknown }> {
-    if (!servePort) { throw new Error('Serve is not running. Start serve in Setup first.'); }
+  // ---------- model calls ----------
+  async function chatOnce(model: string, prompt: string, signal: AbortSignal): Promise<{ text: string; snapshots?: Snapshots }> {
+    if (!servePort) { throw new Error('Serve isn’t running. Start serve from Setup at the top of the panel.'); }
     const url = `http://127.0.0.1:${servePort}/api/chat`;
     const attempts: Array<Record<string, unknown> | undefined> = [
       // Proposal only (spec 6.7): ask a future serve to record snapshots.
-      // Stock 0.3.4 has no snapshots field and ignores nothing it must
-      // understand; if it rejects the option, retry without options.
+      // If a serve rejects the option, retry without options.
       { record_snapshots: true },
       undefined,
     ];
@@ -413,12 +493,7 @@ export function activate(context: vscode.ExtensionContext): void {
     for (const options of attempts) {
       const body: Record<string, unknown> = { model, messages: [{ role: 'user', content: prompt }] };
       if (options) { body.options = options; }
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal,
-      });
+      const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal });
       const text = await response.text();
       let parsed: unknown = text;
       try { parsed = JSON.parse(text); } catch { /* keep text */ }
@@ -432,75 +507,61 @@ export function activate(context: vscode.ExtensionContext): void {
         if (options) { lastError = new Error(detail); continue; }
         throw new Error(detail);
       }
-      const content = parsed && typeof parsed === 'object'
-        ? (parsed as { message?: { content?: unknown } }).message?.content
-        : undefined;
+      const content = parsed && typeof parsed === 'object' ? (parsed as { message?: { content?: unknown } }).message?.content : undefined;
       if (typeof content !== 'string') { throw new Error('Serve returned a chat response without message content.'); }
       const snapshots = replayAvailable(parsed) ? (parsed as { snapshots: Snapshots }).snapshots : undefined;
-      return { text: content, snapshots, raw: parsed };
+      return { text: content, snapshots };
     }
     throw lastError instanceof Error ? lastError : new Error('Chat request failed.');
   }
 
-  function activeSelection(): { editor: vscode.TextEditor; text: string; startOffset: number; endOffset: number; fileName: string } | undefined {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) { return undefined; }
-    const selection = editor.selection;
-    if (selection.isEmpty) { return undefined; }
-    const doc = editor.document;
-    return {
-      editor,
-      text: doc.getText(selection),
-      startOffset: doc.offsetAt(selection.start),
-      endOffset: doc.offsetAt(selection.end),
-      fileName: path.basename(doc.fileName),
-    };
-  }
+  function codeBlock(text: string): string { return `\`\`\`\n${text}\n\`\`\``; }
 
-  async function runAction(action: ActionKind): Promise<void> {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-      post('hint', { text: 'Open a file first.' });
+  /** Explain / Fix / Insert, using the editor snapshot taken when the button was clicked. */
+  async function runAction(action: ActionKind, ctx: CapturedContext | undefined): Promise<void> {
+    await detectServe();
+    const plan = planAction(action, ctx, !!servePort);
+    if (!plan.ok || !ctx) {
+      post('hint', { text: plan.ok ? 'No file selected.' : plan.hint });
+      if (!servePort) { void refreshSetup(); }
       return;
     }
-    const doc = editor.document;
-    const selection = editor.selection;
     let prompt: string;
     let title: string;
-    let kind: PendingEdit['kind'] = action;
+    let shown: string;
     if (action === 'fix') {
-      const sel = activeSelection();
-      if (!sel) { post('hint', { text: 'Select the code first.' }); return; }
-      prompt = `${FIX_PROMPT}\n\n\`\`\`\n${sel.text}\n\`\`\``;
+      prompt = `${FIX_PROMPT}\n\n${codeBlock(ctx.selectionText)}`;
       title = 'Working on a fix';
+      shown = 'Fix selection';
     } else if (action === 'explain') {
-      const sel = activeSelection();
-      if (!sel) { post('hint', { text: 'Select the code first.' }); return; }
       // PROPOSED, UNTESTED prompt (see prompts.ts).
-      prompt = `${EXPLAIN_PROMPT}\n\n\`\`\`\n${sel.text}\n\`\`\``;
+      prompt = `${EXPLAIN_PROMPT}\n\n${codeBlock(ctx.selectionText)}`;
       title = 'Working on an explanation';
+      shown = 'Explain selection';
+    } else if (ctx.hasSelection) {
+      // Insert with code selected: the result replaces the selection.
+      // PROPOSED, UNTESTED prompt (see prompts.ts).
+      prompt = insertPrompt(`Rewrite this code from ${ctx.fileName} as a complete, working replacement:\n\n${codeBlock(ctx.selectionText)}`, ctx.fileName);
+      title = 'Writing code to replace the selection';
+      shown = 'Insert at cursor (replaces the selection)';
     } else {
-      // Insert at cursor. PROPOSED, UNTESTED prompt (see prompts.ts).
-      // Phase 1 Insert does not read the code after the cursor.
-      const cursor = selection.active;
-      const lineText = doc.lineAt(cursor.line).text;
-      prompt = insertPrompt(`Insert code at line ${cursor.line + 1} in ${path.basename(doc.fileName)}, after: ${lineText}`, path.basename(doc.fileName));
+      // Insert with no selection: write at the cursor. Phase 1 Insert
+      // does not read the code after the cursor. PROPOSED, UNTESTED.
+      const lines = ctx.fullText.split('\n');
+      const lineText = lines[ctx.startLine - 1] ?? '';
+      prompt = insertPrompt(`Insert code at line ${ctx.startLine} in ${ctx.fileName}, after: ${lineText}`, ctx.fileName);
       title = 'Writing code to insert';
-      kind = 'insert';
+      shown = 'Insert at cursor';
     }
-    if (!servePort) {
-      post('hint', { text: 'Serve is not running. Start serve in Setup first.' });
-      return;
-    }
+    post('userMessage', { text: shown, contextLabel: ctx.label });
     const model = serveModel;
-    // Long-input warning, spec 6.4: ~300 tokens for sdar:1.7b on CPU.
     const estimatedTokens = Math.round(prompt.length / 4);
     if (model === 'sdar:1.7b' && estimatedTokens > 300) {
       const choice = await vscode.window.showWarningMessage(
         `This selection is long for sdar:1.7b on CPU (about ${estimatedTokens} tokens). It may be slow, and fixes longer than 128 tokens get cut off.`,
         'Send anyway', 'Cancel',
       );
-      if (choice !== 'Send anyway') { return; }
+      if (choice !== 'Send anyway') { post('hint', { text: 'Not sent.' }); return; }
     }
     abortController = new AbortController();
     const started = Date.now();
@@ -508,7 +569,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const elapsed = (Date.now() - started) / 1000;
       const range = history.rangeFor(action, model);
       const rangeLine = range
-        ? `On this machine, recent ${action}s with ${model} took ${range.min.toFixed(1)} to ${range.max.toFixed(1)} s. The bar shows time against that range, not progress inside the model.`
+        ? `On this machine, recent ${action}s with ${model} took ${range.min.toFixed(1)} to ${range.max.toFixed(1)} s. The time shown is wall clock, not progress inside the model.`
         : undefined;
       post('waiting', { title, elapsed: `${elapsed.toFixed(1)} s`, rangeLine });
     }, 500);
@@ -517,36 +578,14 @@ export function activate(context: vscode.ExtensionContext): void {
       const seconds = (Date.now() - started) / 1000;
       history.record(action, model, seconds);
       saveHistory();
+      clearInterval(timer);
       post('waitingDone', {});
       const clean = stripFences(result.text);
-      lastSnapshots = result.snapshots;
       if (action === 'explain') {
-        post('message', { meta: `${path.basename(doc.fileName)} — explanation, ${seconds.toFixed(1)} s`, body: clean, isCode: false });
+        post('message', { meta: `${ctx.label}, explanation, ${seconds.toFixed(1)} s`, body: clean, isCode: false });
         return;
       }
-      const fullText = doc.getText();
-      if (action === 'fix') {
-        const sel = activeSelection();
-        if (!sel) { post('hint', { text: 'Select the code first.' }); return; }
-        const spliced = spliceSelection(fullText, sel.startOffset, sel.endOffset, clean);
-        pending = {
-          kind: 'fix', uri: doc.uri, version: doc.version,
-          startOffset: sel.startOffset, endOffset: sel.endOffset,
-          originalText: fullText, newText: clean, spliced, model, seconds,
-          snapshots: result.snapshots,
-        };
-        await showFixResult(doc, spliced, clean, seconds, result.snapshots);
-      } else {
-        const offset = doc.offsetAt(selection.active);
-        const spliced = spliceInsert(fullText, offset, clean);
-        pending = {
-          kind: 'insert', uri: doc.uri, version: doc.version,
-          startOffset: offset, endOffset: offset,
-          originalText: fullText, newText: clean, spliced, model, seconds,
-          snapshots: result.snapshots,
-        };
-        await showFixResult(doc, spliced, clean, seconds, result.snapshots, true);
-      }
+      await proposeEdit(action === 'fix' ? 'fix' : 'insert', ctx, clean, seconds, result.snapshots);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         post('hint', { text: 'Cancelled. The model may keep running server-side until it finishes.' });
@@ -559,38 +598,35 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
-  async function showFixResult(
-    doc: vscode.TextDocument, spliced: string, clean: string, seconds: number,
-    snapshots: Snapshots | undefined, isInsert = false,
-  ): Promise<void> {
-    const diff = simpleDiff(doc.getText(), spliced);
+  async function proposeEdit(kind: 'fix' | 'insert', ctx: CapturedContext, code: string, seconds: number, snapshots: Snapshots | undefined): Promise<void> {
+    const edit = planEdit(kind, ctx.fullText, ctx.selStart, ctx.selEnd, ctx.active, code);
+    const diff = simpleDiff(ctx.fullText, edit.spliced);
     const changed = countChangedLines(diff);
-    const meta = isInsert
-      ? `${countChangedLines(simpleDiff('', clean))} lines to insert at line ${doc.positionAt(pending?.startOffset ?? 0).line + 1}`
-      : `${changed} line${changed === 1 ? '' : 's'} changed`;
-    lastResultMeta = meta;
-    let checks: Array<{ name: string; pass: boolean; message?: string }> = [];
+    const replacing = kind === 'fix' || ctx.hasSelection;
+    const acceptLabel = replacing && kind === 'fix' ? 'Accept' : 'Insert';
+    const rejectLabel = kind === 'fix' ? 'Reject' : 'Discard';
+    const meta = replacing
+      ? `${changed} line${changed === 1 ? '' : 's'} changed in ${ctx.label}`
+      : `${countChangedLines(simpleDiff('', code))} lines to insert at line ${ctx.startLine} of ${ctx.fileName}`;
+    let checks: Array<{ name: string; pass: boolean; message?: string }> | undefined;
     let warnings: string[] = [];
     let warning = 'No checks for this language yet. Review the change before accepting.';
-    if (doc.languageId === 'python' || doc.fileName.endsWith('.py')) {
-      const python = await findPython();
-      if (python) {
+    let blocked = false;
+    if (ctx.languageId === 'python' || ctx.path.endsWith('.py')) {
+      const py = await findPython();
+      if (py) {
         try {
-          const result = await runChecks(python, checksScriptPath(), spliced);
-          checks = [
-            { name: 'Syntax', pass: !result.findings.some((f) => f.kind === 'syntax') },
-            { name: 'Undefined names', pass: !result.findings.some((f) => f.kind === 'undefined') },
-            { name: 'Dead code', pass: !result.findings.some((f) => f.kind === 'dead') },
-          ];
-          for (const f of result.findings) {
-            const entry = checks.find((c) => c.name === (f.kind === 'syntax' ? 'Syntax' : f.kind === 'undefined' ? 'Undefined names' : 'Dead code'));
-            if (entry) { entry.message = f.message; }
-          }
+          const result = await runChecks(py.path, checksScriptPath(), edit.spliced);
+          const names: Record<string, string> = { syntax: 'Syntax', undefined: 'Undefined names', dead: 'Dead code' };
+          checks = ['syntax', 'undefined', 'dead'].map((k) => {
+            const f = result.findings.find((x) => x.kind === k);
+            return { name: names[k], pass: !f, message: f?.message };
+          });
           warnings = result.warnings.map((w) => w.message);
+          const gate = gateProposal(result.findings, acceptLabel);
+          blocked = gate.blocked;
           const failed = checks.find((c) => !c.pass);
-          warning = failed
-            ? `Checks found a problem: ${failed.name}. Review before accepting.`
-            : CHECKS_PASSED_WARNING;
+          warning = gate.blocked ? (gate.reason ?? '') : failed ? `Checks found a problem: ${failed.name}. Review before accepting.` : CHECKS_PASSED_WARNING;
         } catch (err) {
           warning = `Checks could not run: ${err instanceof Error ? err.message : String(err)}. Review the change before accepting.`;
         }
@@ -598,155 +634,174 @@ export function activate(context: vscode.ExtensionContext): void {
         warning = 'No Python interpreter found, so checks could not run. Review the change before accepting.';
       }
     }
-    const hasFailedCheck = checks.some((c) => !c.pass);
+    const { proposal, replacedId } = proposals.create({
+      kind, uri: ctx.uri, version: ctx.version, start: edit.start, end: edit.end,
+      replacement: edit.replacement, originalText: ctx.fullText, spliced: edit.spliced, blocked,
+    });
+    if (replacedId) {
+      snapshotsById.delete(replacedId);
+      post('dismiss', { id: replacedId, note: 'Earlier proposal dismissed; a newer one replaced it. The file was not changed.' });
+    }
+    if (snapshots) { snapshotsById.set(proposal.id, snapshots); }
     post('result', {
       result: {
-        meta,
-        time: `${seconds.toFixed(1)} s`,
-        diff: diff.map((d) => ({ kind: d.kind, text: d.text })),
-        checks: checks.length > 0 ? checks : undefined,
-        warnings,
-        warning,
-        acceptLabel: isInsert ? 'Insert' : 'Accept',
-        rejectLabel: isInsert ? 'Discard' : 'Reject',
+        id: proposal.id, meta, time: `${seconds.toFixed(1)} s`, contextLabel: `Sent: ${ctx.label}`,
+        diff: diff.map((d) => ({ kind: d.kind, text: d.text })), checks, warnings, warning, blocked,
+        acceptLabel, rejectLabel, acceptPrimary: !blocked && !(checks ?? []).some((c) => !c.pass),
         replayAvailable: !!snapshots,
-        acceptPrimary: !hasFailedCheck,
       },
     });
   }
 
-  function openPanel(): void {
-    if (panel) { panel.reveal(); return; }
-    panel = vscode.window.createWebviewPanel('ollada-code.chat', 'Ollada', vscode.ViewColumn.Beside, {
-      enableScripts: true,
-      retainContextWhenHidden: true,
-    });
-    panel.webview.html = getWebviewHtml();
-    currentWebview = panel.webview;
-    const panelWebview = panel.webview;
-    panel.onDidDispose(() => { panel = undefined; if (currentWebview === panelWebview) { currentWebview = undefined; } });
-    const handleMessage = async (message: { type: string; [key: string]: unknown }) => {
-      switch (message.type) {
-        case 'ready':
-          void refreshSetup();
-          break;
-        case 'checkAgain':
-          void refreshSetup();
-          break;
-        case 'showSetup':
-          // Back to Setup without stopping serve: serveChild and
-          // servePort are untouched, so Start serve again while
-          // serving still reports "already running".
-          void refreshSetup(true);
-          break;
-        case 'startServe':
-          void startServe();
-          break;
-        case 'copy':
-          if (typeof message.text === 'string') { void vscode.env.clipboard.writeText(message.text); }
-          break;
-        case 'download': {
-          const model = String(message.model ?? '');
-          const python = await findPython();
-          if (!python) { post('hint', { text: 'No Python interpreter found.' }); break; }
-          const terminal = vscode.window.createTerminal('Ollada: pull');
-          terminal.show();
-          terminal.sendText(`${python} -m ollada.cli pull ${model}`);
-          break;
+  async function acceptProposal(id: string): Promise<void> {
+    const p: Proposal | undefined = proposals.get(id);
+    if (!p) { post('dismiss', { id, note: 'That proposal is no longer pending. The file was not changed.' }); return; }
+    if (p.blocked) { post('hint', { text: 'This proposal has a syntax error, so it can’t be applied. Discard it.' }); return; }
+    const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === p.uri);
+    if (!doc || doc.isClosed) {
+      proposals.discard(id);
+      post('dismiss', { id, note: 'The file was closed, so nothing was applied. Run it again.' });
+      return;
+    }
+    if (doc.version !== p.version) {
+      proposals.discard(id);
+      post('dismiss', { id, note: 'The file changed while Ollada was working, so nothing was applied. Run it again.' });
+      return;
+    }
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(doc.uri, new vscode.Range(doc.positionAt(p.start), doc.positionAt(p.end)), p.replacement);
+    const applied = await vscode.workspace.applyEdit(edit);
+    proposals.discard(id);
+    snapshotsById.delete(id);
+    post('dismiss', { id, note: applied ? 'Applied. Undo with Ctrl+Z in the editor.' : 'VS Code didn’t apply the edit. The file was not changed.' });
+  }
+
+  function rejectProposal(id: string): void {
+    // The proposal was never written to the file, so the file is untouched.
+    proposals.discard(id);
+    snapshotsById.delete(id);
+    post('dismiss', { id, note: 'Discarded. The file was not changed.' });
+  }
+
+  async function freeChat(text: string): Promise<void> {
+    const ctx = captureContext(editorState());
+    await detectServe();
+    const plan = planAction('chat', ctx, !!servePort);
+    post('userMessage', { text, contextLabel: ctx ? ctx.label : '' });
+    if (!plan.ok) { post('hint', { text: plan.hint }); return; }
+    // Chat includes the selected code when there is a selection, so the
+    // model has the context the chip shows.
+    const prompt = ctx?.hasSelection ? `${text}\n\nCode from ${ctx.fileName}, lines ${ctx.startLine} to ${ctx.endLine}:\n${codeBlock(ctx.selectionText)}` : text;
+    const controller = new AbortController();
+    abortController = controller;
+    const started = Date.now();
+    const timer = setInterval(() => post('waiting', { title: 'Working on an answer', elapsed: `${((Date.now() - started) / 1000).toFixed(1)} s` }), 500);
+    try {
+      const result = await chatOnce(serveModel, prompt, controller.signal);
+      clearInterval(timer);
+      post('waitingDone', {});
+      post('message', { meta: `${serveModel}, ${((Date.now() - started) / 1000).toFixed(1)} s`, body: stripFences(result.text), isCode: false });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') { post('hint', { text: 'Cancelled.' }); }
+      else { post('hint', { text: `Ollada error: ${err instanceof Error ? err.message : String(err)}` }); }
+    } finally {
+      clearInterval(timer);
+      post('waitingDone', {});
+    }
+  }
+
+  // ---------- view ----------
+  async function handleMessage(message: { type: string; [key: string]: unknown }): Promise<void> {
+    switch (message.type) {
+      case 'ready': {
+        postContext();
+        void refreshSetup();
+        // A view that was re-created only re-shows a proposal that is still pending.
+        const p = proposals.pending();
+        if (p) {
+          proposals.discard(p.id);
+          snapshotsById.delete(p.id);
+          post('hint', { text: 'An earlier proposal was dismissed when the panel reloaded. The file was not changed.' });
         }
-        case 'action':
-          void runAction(message.action as ActionKind);
-          break;
-        case 'chat': {
-          // Free-form chat: same /api/chat path, no edit, no checks.
-          if (!servePort) { post('hint', { text: 'Serve is not running. Start serve in Setup first.' }); break; }
-          const controller = new AbortController();
-          try {
-            const result = await chatOnce(serveModel, String(message.text ?? ''), controller.signal);
-            post('message', { meta: `${serveModel}`, body: stripFences(result.text), isCode: false });
-          } catch (err) {
-            post('hint', { text: `Ollada error: ${err instanceof Error ? err.message : String(err)}` });
-          }
-          break;
-        }
-        case 'cancel':
-          abortController?.abort();
-          break;
-        case 'accept': {
-          if (!pending) { break; }
-          const editor = vscode.window.activeTextEditor;
-          if (!editor || editor.document.uri.toString() !== pending.uri.toString()) {
-            post('hint', { text: 'Open the original file first, then Accept.' });
-            break;
-          }
-          if (editor.document.version !== pending.version) {
-            post('hint', { text: 'The file changed while Ollada was working. Run it again.' });
-            pending = undefined;
-            break;
-          }
-          const edit = new vscode.WorkspaceEdit();
-          const range = new vscode.Range(
-            editor.document.positionAt(pending.startOffset),
-            editor.document.positionAt(pending.endOffset),
-          );
-          edit.replace(pending.uri, range, pending.kind === 'insert' ? pending.newText + '\n' : pending.newText);
-          const applied = await vscode.workspace.applyEdit(edit);
-          if (applied) {
-            post('message', { meta: lastResultMeta, body: 'Applied.', isCode: false });
-          }
-          pending = undefined;
-          break;
-        }
-        case 'reject':
-          pending = undefined;
-          post('message', { meta: lastResultMeta, body: 'Discarded.', isCode: false });
-          break;
-        case 'watch': {
-          if (!lastSnapshots) {
-            post('hint', { text: 'Replay not available for this model' });
-            break;
-          }
-          const total = totalSteps(lastSnapshots);
-          post('replay', {
-            frames: lastSnapshots.frames,
-            totalSteps: total,
-            sub: `How this answer formed, replayed from the steps ollada serve recorded. ${serveModel} writes in blocks of ${lastSnapshots.block_length} tokens, ${lastSnapshots.steps} steps per block.`,
-          });
-          break;
-        }
-        default:
-          break;
+        break;
       }
-    };
-    panel.webview.onDidReceiveMessage(handleMessage);
-    void refreshSetup();
+      case 'checkAgain': pythonCache = undefined; void refreshSetup(); break;
+      case 'changePython': void changePython(); break;
+      case 'startServe': void startServe(); break;
+      case 'copy':
+        if (typeof message.text === 'string') { void vscode.env.clipboard.writeText(message.text); }
+        break;
+      case 'download': {
+        const model = String(message.model ?? '');
+        const py = await findPython();
+        if (!py) { post('hint', { text: 'No Python interpreter found.' }); break; }
+        const terminal = vscode.window.createTerminal('Ollada: pull');
+        terminal.show();
+        // Quote a path with spaces; PowerShell needs & to run a quoted path.
+        const exe = /\s/.test(py.path) ? (process.platform === 'win32' ? `& "${py.path}"` : `"${py.path}"`) : py.path;
+        terminal.sendText(`${exe} -m ollada.cli pull ${model}`);
+        break;
+      }
+      case 'action': {
+        // Snapshot the editor now, at click time, before anything else runs.
+        const ctx = captureContext(editorState());
+        void runAction(message.action as ActionKind, ctx);
+        break;
+      }
+      case 'chat': void freeChat(String(message.text ?? '')); break;
+      case 'cancel': abortController?.abort(); break;
+      case 'accept': void acceptProposal(String(message.id ?? '')); break;
+      case 'reject': rejectProposal(String(message.id ?? '')); break;
+      case 'watch': {
+        const snaps = snapshotsById.get(String(message.id ?? ''));
+        if (!snaps) { break; }
+        post('replay', {
+          frames: snaps.frames,
+          totalSteps: totalSteps(snaps),
+          sub: `How this answer formed, replayed from the steps ollada serve recorded. ${serveModel} writes in blocks of ${snaps.block_length} tokens, ${snaps.steps} steps per block.`,
+        });
+        break;
+      }
+      default: break;
+    }
+  }
+
+  async function revealView(): Promise<void> {
+    await vscode.commands.executeCommand(`${VIEW_ID}.focus`);
+  }
+
+  /** Command palette / keybinding path: snapshot the editor first, then show the view. */
+  function commandAction(action: ActionKind): void {
+    const ctx = captureContext(editorState());
+    void (async () => {
+      await revealView();
+      // Give a freshly created view a moment to load before posting to it.
+      for (let i = 0; i < 20 && !view; i++) { await new Promise((r) => setTimeout(r, 100)); }
+      await runAction(action, ctx);
+    })();
   }
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('ollada-code.openPanel', openPanel),
-    vscode.commands.registerCommand('ollada-code.explainSelection', () => { openPanel(); void runAction('explain'); }),
-    vscode.commands.registerCommand('ollada-code.fixSelection', () => { openPanel(); void runAction('fix'); }),
-    vscode.commands.registerCommand('ollada-code.insertAtCursor', () => { openPanel(); void runAction('insert'); }),
-    vscode.commands.registerCommand('ollada-code.startServe', () => void startServe()),
-    vscode.commands.registerCommand('ollada-code.checkAgain', () => void refreshSetup()),
-    vscode.window.registerWebviewViewProvider('ollada-code.chat', {
-      resolveWebviewView(view) {
-        // The side view is the spec's primary surface. Commands open the
-        // same Beside panel, so the side view delegates to it: clicking
-        // the Ollada activity-bar view opens the full panel, which
-        // carries the complete message handler. This avoids two live
-        // webviews with divergent state in Phase 1.
-        view.webview.options = { enableScripts: true };
-        view.webview.html = getWebviewHtml();
-        view.webview.onDidReceiveMessage((message: { type: string }) => {
-          if (message.type === 'ready') { openPanel(); }
-        });
+    vscode.window.registerWebviewViewProvider(VIEW_ID, {
+      resolveWebviewView(webviewView) {
+        view = webviewView;
+        webviewView.webview.options = { enableScripts: true };
+        webviewView.webview.html = getWebviewHtml();
+        webviewView.webview.onDidReceiveMessage((m: { type: string; [key: string]: unknown }) => { void handleMessage(m); });
+        webviewView.onDidDispose(() => { if (view === webviewView) { view = undefined; } });
       },
-    }),
+    }, { webviewOptions: { retainContextWhenHidden: true } }),
+    vscode.commands.registerCommand('ollada-code.openPanel', () => void revealView()),
+    vscode.commands.registerCommand('ollada-code.explainSelection', () => commandAction('explain')),
+    vscode.commands.registerCommand('ollada-code.fixSelection', () => commandAction('fix')),
+    vscode.commands.registerCommand('ollada-code.insertAtCursor', () => commandAction('insert')),
+    vscode.commands.registerCommand('ollada-code.startServe', () => void startServe()),
+    vscode.commands.registerCommand('ollada-code.checkAgain', () => { pythonCache = undefined; void refreshSetup(); }),
+    vscode.commands.registerCommand('ollada-code.changePython', () => void changePython()),
   );
 }
 
 export function deactivate(): void {
-  // Serve is a child process of the extension; VS Code terminates it
-  // with the extension host. Nothing else needs cleanup here.
+  // A serve the extension started is its child process; VS Code ends it
+  // with the extension host. A serve the user started is never touched.
 }

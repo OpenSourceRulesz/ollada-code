@@ -24,6 +24,33 @@ export function spliceInsert(original: string, offset: number, insertion: string
   return original.slice(0, offset) + code + original.slice(offset);
 }
 
+/**
+ * Where a proposal goes and exactly what Accept writes. 0.1.4 dogfood
+ * fix: Insert with code selected used to insert at the cursor and keep
+ * the selected code, so a fixed `def greet(name):` landed above the
+ * broken `def greet(name)` and the file had both. Now any action with a
+ * non-empty selection replaces that selection; Insert with no selection
+ * inserts at the cursor. If the selection ended with a newline and the
+ * model's code doesn't, the newline is kept so the next line isn't joined.
+ */
+export function planEdit(
+  kind: 'fix' | 'insert',
+  fullText: string,
+  selStart: number,
+  selEnd: number,
+  active: number,
+  code: string,
+): { start: number; end: number; replacement: string; spliced: string } {
+  const hasSelection = selEnd > selStart;
+  if (kind === 'fix' || hasSelection) {
+    const selected = fullText.slice(selStart, selEnd);
+    const replacement = selected.endsWith('\n') && !code.endsWith('\n') ? code + '\n' : code;
+    return { start: selStart, end: selEnd, replacement, spliced: fullText.slice(0, selStart) + replacement + fullText.slice(selEnd) };
+  }
+  const replacement = code.endsWith('\n') ? code : code + '\n';
+  return { start: active, end: active, replacement, spliced: fullText.slice(0, active) + replacement + fullText.slice(active) };
+}
+
 export interface DiffLine { kind: 'same' | 'add' | 'remove'; text: string; }
 
 /**

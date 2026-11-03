@@ -5,11 +5,19 @@
 // Primary buttons and text accents are #5558C9, hover #6265D6.
 // UI font is the VS Code font (var(--vscode-font-family)); Geist
 // bundling is deferred before any publish (spec 10c, license unchecked).
-// Mockup v2 polish (0.1.3, presentation only): step circles, fit dots,
-// Recommended card tint, pill chat buttons, arrow send button, green-dot
-// serving header. Panel stays Beside; backgrounds/text/borders/inputs/
-// diff colours stay VS Code theme variables, no forced navy skin.
-// Code always uses the editor font.
+// Code always uses the editor font. No forced near-black skin.
+//
+// 0.1.4 layout (dogfood fixes):
+// - Chat is always visible. Setup is a collapsible section under the
+//   header, open while serve isn't reachable, collapsed once it is.
+// - Header stays at the top, the chat log scrolls in the middle, and
+//   the context chip, Explain / Fix / Insert, and the composer are
+//   pinned to the bottom. New messages scroll the log to the bottom.
+// - The context chip always shows the file and lines that will be sent.
+// - Each proposal is its own card with an id. Discard removes that card.
+//   A blocked proposal (syntax error) has Accept / Insert turned off.
+// - The Watch diffusion button only appears when serve returned real
+//   snapshots. Stock serve 0.3.4 never does, so it never appears there.
 export function getWebviewHtml(): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -18,35 +26,61 @@ export function getWebviewHtml(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     background: var(--vscode-sideBar-background);
     color: var(--vscode-foreground);
     font-family: var(--vscode-font-family);
     font-size: var(--vscode-font-size);
-    margin: 0; padding: 12px;
+    margin: 0; padding: 0;
   }
-  h2 { font-size: 1.15em; margin: 8px 0; }
+  #shell { display: flex; flex-direction: column; height: 100vh; }
+  #top {
+    flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+  }
+  #top .name { font-weight: 600; }
+  #header-status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #setup {
+    flex: none; max-height: 50vh; overflow-y: auto; padding: 4px 12px 10px;
+    border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+  }
+  #serve-banner {
+    flex: none; display: none; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 12px;
+    border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+    background: var(--vscode-inputValidation-warningBackground);
+  }
+  #log { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 12px; }
+  #dock {
+    flex: none; padding: 8px 12px 10px; display: flex; flex-direction: column; gap: 8px;
+    border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+  }
+  h2 { font-size: 1.1em; margin: 8px 0; }
   .secondary { color: var(--vscode-descriptionForeground); }
+  .small { font-size: 0.9em; }
   button {
     background: #5558C9; color: #fff; border: 1px solid transparent;
-    border-radius: 4px; padding: 6px 12px; cursor: pointer;
+    border-radius: 4px; padding: 6px 12px; cursor: pointer; font: inherit;
   }
   button:hover { background: #6265D6; }
   button.secondary {
     background: var(--vscode-button-secondaryBackground);
     color: var(--vscode-button-secondaryForeground);
   }
-  button:disabled { opacity: 0.5; cursor: default; }
-  button:focus-visible, input:focus-visible, textarea:focus-visible {
+  button:disabled, button:disabled:hover { opacity: 0.5; cursor: default; background: #5558C9; }
+  button.secondary:disabled, button.secondary:disabled:hover { background: var(--vscode-button-secondaryBackground); }
+  button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible {
     outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px;
   }
+  .link-btn { background: transparent; color: var(--vscode-textLink-foreground); padding: 2px 4px; }
+  .link-btn:hover { background: transparent; text-decoration: underline; }
   a { color: #5558C9; }
   body.vscode-dark a { color: #A9ABEE; }
-  input, textarea {
+  textarea {
     background: var(--vscode-input-background);
     color: var(--vscode-input-foreground);
-    border: 1px solid var(--vscode-input-border);
-    border-radius: 4px; width: 100%; padding: 6px;
+    border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+    border-radius: 4px; width: 100%; padding: 6px; font: inherit; resize: vertical;
   }
   .card {
     border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
@@ -63,28 +97,37 @@ export function getWebviewHtml(): string {
   .step-num { background: #5558C9; color: #fff; }
   .step-warn { background: #D29922; color: #1f1f1f; }
   .fit-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; margin-right: 2px; }
-  .serving-dot { color: #2DA44E; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .dot-ok { background: #2DA44E; }
+  .dot-warn { background: #D29922; }
   .pill-btn {
     background: transparent; border: 1px solid var(--vscode-widget-border);
-    color: var(--vscode-foreground); border-radius: 999px; padding: 6px 14px;
+    color: var(--vscode-foreground); border-radius: 999px; padding: 5px 12px;
   }
   .pill-btn:hover { border-color: #5558C9; background: rgba(85, 88, 201, 0.12); }
-  .composer-row { align-items: flex-end; }
-  .composer-row textarea { flex: 1; }
-  .send-btn {
-    background: #5558C9; color: #fff; border-radius: 8px;
-    width: 40px; min-width: 40px; height: 40px; font-size: 1.25em; line-height: 1; padding: 0;
+  .pill-btn:disabled, .pill-btn:disabled:hover { background: transparent; border-color: var(--vscode-widget-border); }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+    padding: 3px 8px; border-radius: 4px; font-size: 0.9em;
+    border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+    color: var(--vscode-descriptionForeground);
   }
-  .send-btn:hover { background: #6265D6; }
+  .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip.empty { border-style: dashed; }
+  .composer-row { display: flex; gap: 6px; align-items: flex-end; }
+  .send-btn {
+    width: 40px; min-width: 40px; height: 40px; font-size: 1.25em; line-height: 1; padding: 0; border-radius: 8px;
+  }
   .pill {
     background: var(--vscode-editor-background);
     border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
     border-radius: 4px; padding: 6px 8px; font-family: var(--vscode-editor-font-family);
-    font-size: var(--vscode-editor-font-size); word-break: break-all;
+    font-size: var(--vscode-editor-font-size); word-break: break-all; margin-top: 4px;
   }
   .row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; }
   .badge { font-weight: 600; }
-  .diff { font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); white-space: pre-wrap; }
+  .diff { font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); white-space: pre-wrap; margin: 8px 0; }
   .diff .add { background: var(--vscode-diffEditor-insertedLineBackground); display: block; }
   .diff .remove { background: var(--vscode-diffEditor-removedLineBackground); display: block; }
   .warning {
@@ -92,137 +135,208 @@ export function getWebviewHtml(): string {
     border: 1px solid var(--vscode-inputValidation-warningBorder);
     border-radius: 8px; padding: 8px; margin: 8px 0;
   }
+  .blocked {
+    background: var(--vscode-inputValidation-errorBackground);
+    border: 1px solid var(--vscode-inputValidation-errorBorder);
+    border-radius: 8px; padding: 8px; margin: 8px 0;
+  }
   .msg { margin: 10px 0; }
   .msg .meta { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
-  .logo { color: #6C6FD8; font-size: 1.4em; letter-spacing: 2px; }
+  .msg.user .body { background: rgba(85, 88, 201, 0.12); border-radius: 8px; padding: 6px 10px; display: inline-block; }
+  .note { color: var(--vscode-descriptionForeground); margin: 8px 0; font-size: 0.95em; }
+  .logo { display: inline-flex; }
   .mask { background: #6C6FD8; color: transparent; border-radius: 2px; padding: 0 2px; }
   body.vscode-light .mask { background: #D3D4F0; }
+  #replay-screen { position: fixed; inset: 0; background: var(--vscode-sideBar-background); padding: 12px; overflow-y: auto; display: none; }
   @media (max-width: 360px) { .row { flex-direction: column; } }
-  @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; scroll-behavior: auto !important; } }
 </style>
 </head>
 <body>
-<div id="app" aria-live="polite">
-  <div><span class="logo" aria-label="Ollada six-dot mark">● ● ● ● ● ●</span> <strong>Ollada</strong> <span id="header-status" class="secondary"></span></div>
+<div id="shell">
+  <header id="top">
+    <span class="logo" aria-hidden="true"><svg width="18" height="18" viewBox="12 24 106 100" fill="#6C6FD8"><circle cx="26" cy="34" r="10"/><circle cx="22" cy="76" r="10"/><circle cx="38" cy="114" r="10"/><circle cx="72" cy="74" r="10"/><circle cx="108" cy="52" r="10"/><circle cx="108" cy="96" r="10"/></svg></span>
+    <span class="name">Ollada</span>
+    <span id="header-status" class="secondary small">Checking…</span>
+    <button id="setup-toggle" class="secondary" aria-expanded="true" aria-controls="setup"><span id="setup-dot" class="dot dot-warn" aria-hidden="true"></span>Setup</button>
+  </header>
 
-  <section id="setup-screen" style="display:none">
+  <section id="setup" aria-label="Setup">
     <h2>Set up Ollada on this machine</h2>
-    <p class="secondary">Nothing downloads or starts until you click. No telemetry.</p>
+    <p class="secondary small">Nothing downloads or starts until you click. No telemetry.</p>
     <div id="setup-steps"></div>
     <div id="model-picker"></div>
+    <p id="cache-note" class="secondary small"></p>
     <div class="row">
-      <button id="start-serve-btn">Start serve</button>
       <button id="check-again-btn" class="secondary">Check again</button>
     </div>
-    <p id="setup-note" class="secondary"></p>
+    <p class="secondary small">Replay needs a future ollada serve that records diffusion steps. Serve 0.3.4 doesn’t, so there’s no replay yet.</p>
   </section>
 
-  <section id="chat-screen" style="display:none">
-    <div class="row">
-      <button id="explain-btn" class="pill-btn">Explain selection</button>
-      <button id="fix-btn" class="pill-btn">Fix selection</button>
-      <button id="insert-btn" class="pill-btn">Insert at cursor</button>
-      <button id="setup-btn" class="pill-btn">Setup</button>
+  <div id="serve-banner" role="status">
+    <span id="serve-banner-text">Serve isn’t running.</span>
+    <button id="start-serve-btn">Start serve</button>
+  </div>
+
+  <main id="log" aria-live="polite" aria-label="Chat"></main>
+
+  <footer id="dock">
+    <div><span id="chip" class="chip empty" title=""><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5"/></svg><span id="chip-text">No file selected</span></span></div>
+    <div class="actions">
+      <button id="explain-btn" class="pill-btn" disabled>Explain selection</button>
+      <button id="fix-btn" class="pill-btn" disabled>Fix selection</button>
+      <button id="insert-btn" class="pill-btn" disabled>Insert at cursor</button>
     </div>
-    <div id="messages"></div>
-    <div id="waiting" class="card" style="display:none"></div>
-    <div id="result" class="card" style="display:none"></div>
-    <div class="row composer-row">
-      <textarea id="composer" rows="3" placeholder="Ask about this file (Ctrl+Enter to send)"></textarea>
+    <div class="composer-row">
+      <label for="composer" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Message</label>
+      <textarea id="composer" rows="2" placeholder="Ask about this file (Ctrl+Enter to send)"></textarea>
       <button id="send-btn" class="send-btn" aria-label="Send">→</button>
     </div>
-    <p class="secondary">Inserting writes new code at the cursor. It doesn’t read the code after the cursor yet; that comes with API-level fill-in-the-middle in Phase 2.</p>
-  </section>
-
-  <section id="replay-screen" style="display:none">
-    <p><a href="#" id="back-link">‹ Back to the fix</a></p>
-    <h2>Watch diffusion</h2>
-    <p class="secondary" id="replay-sub"></p>
-    <div id="replay-canvas" class="diff"></div>
-    <p><span id="replay-status"></span> <span id="replay-counter" style="float:right"></span></p>
-    <div class="row">
-      <button id="replay-prev" class="secondary" aria-label="Previous step">‹</button>
-      <button id="replay-play">Play</button>
-      <button id="replay-next" class="secondary" aria-label="Next step">›</button>
-      <input id="replay-slider" type="range" min="0" max="0" value="0" aria-label="Step" style="flex:1">
-    </div>
-    <p class="secondary">Legend: Not reached yet · Current block, still masked · Just written. Replay works with SDAR models. For other models this button reads “Replay not available for this model”.</p>
-  </section>
+    <p class="secondary small" style="margin:0">With code selected, Insert replaces the selection. With nothing selected, it writes at the cursor. It doesn’t read the code after the cursor yet; that comes with API-level fill-in-the-middle in Phase 2.</p>
+  </footer>
 </div>
+
+<section id="replay-screen" aria-label="Watch diffusion">
+  <p><button id="back-link" class="link-btn">‹ Back to the chat</button></p>
+  <h2>Watch diffusion</h2>
+  <p class="secondary" id="replay-sub"></p>
+  <div id="replay-canvas" class="diff"></div>
+  <p><span id="replay-status"></span> <span id="replay-counter" style="float:right"></span></p>
+  <div class="row">
+    <button id="replay-prev" class="secondary" aria-label="Previous step">‹</button>
+    <button id="replay-play">Play</button>
+    <button id="replay-next" class="secondary" aria-label="Next step">›</button>
+    <input id="replay-slider" type="range" min="0" max="0" value="0" aria-label="Step" style="flex:1">
+  </div>
+</section>
 <script>
   const vscode = acquireVsCodeApi();
-  let state = { screen: 'setup', model: 'sdar:1.7b', port: null, frames: [], frameIndex: 0, totalSteps: 0 };
-  function post(type, data) { vscode.postMessage(Object.assign({ type }, data || {})); }
-  function show(screen) {
-    state.screen = screen;
-    document.getElementById('setup-screen').style.display = screen === 'setup' ? 'block' : 'none';
-    document.getElementById('chat-screen').style.display = screen === 'chat' ? 'block' : 'none';
-    document.getElementById('replay-screen').style.display = screen === 'replay' ? 'block' : 'none';
+  const state = { frames: [], frameIndex: 0, totalSteps: 0, replaySub: '', setupTouched: false, setupOpen: true, serving: null };
+  function post(type, data) { vscode.postMessage(Object.assign({ type: type }, data || {})); }
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  const log = document.getElementById('log');
+  function scrollLog() { log.scrollTop = log.scrollHeight; }
+  function append(el) { log.appendChild(el); scrollLog(); }
+
+  function setSetupOpen(open) {
+    state.setupOpen = open;
+    document.getElementById('setup').style.display = open ? 'block' : 'none';
+    document.getElementById('setup-toggle').setAttribute('aria-expanded', open ? 'true' : 'false');
   }
-  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-  function renderSetup(steps, models, note) {
-    // Mockup v2 step circles. Done steps (✓) get a green check circle;
-    // pending steps (•) get a numbered circle in primary, counted over
-    // non-warning steps in Setup order (Python 1, ollada 2, Pick a
-    // model 3, Start serve 4); warning steps (⚠) get an amber warning
-    // circle and do not consume a number, so a server-extra warning
-    // never renumbers Pick a model / Start serve.
+  document.getElementById('setup-toggle').onclick = function() { state.setupTouched = true; setSetupOpen(!state.setupOpen); };
+
+  function renderSetup(m) {
     let canonical = 0;
-    document.getElementById('setup-steps').innerHTML = steps.map(function(s) {
+    document.getElementById('setup-steps').innerHTML = m.steps.map(function(s) {
       let circle = '';
       if (s.icon === '✓') { canonical++; circle = '<span class="step-circle step-done" aria-hidden="true">✓</span>'; }
-      else if (s.icon === '⚠') { circle = '<span class="step-circle step-warn" aria-hidden="true">⚠</span>'; }
+      else if (s.icon === '⚠') { circle = '<span class="step-circle step-warn" aria-hidden="true">!</span>'; }
       else { canonical++; circle = '<span class="step-circle step-num" aria-hidden="true">' + canonical + '</span>'; }
-      return '<div class="step">' + circle + '<div><strong>' + esc(s.title) + '</strong> — ' + esc(s.detail) +
-        (s.command ? '<div class="pill">' + esc(s.command) + ' <button class="secondary" onclick="post(\\'copy\\',{text:' + JSON.stringify(s.command) + '})">Copy</button></div>' : '') + '</div></div>';
+      return '<div class="step">' + circle + '<div><strong>' + esc(s.title) + '</strong><div class="secondary small">' + esc(s.detail) + '</div>' +
+        (s.command ? '<div class="pill">' + esc(s.command) + ' <button class="secondary" data-copy="' + esc(s.command) + '">Copy</button></div>' : '') +
+        (s.action === 'changePython' ? '<div class="row"><button class="secondary" data-act="changePython">Change Python</button></div>' : '') +
+        '</div></div>';
     }).join('');
-    document.getElementById('model-picker').innerHTML = models.map(function(m) {
-      return '<div class="card' + (m.recommended ? ' card-recommended' : '') + '"><strong style="font-family:var(--vscode-editor-font-family)">' + esc(m.model) + '</strong> ' +
-        (m.recommended ? '<span class="badge">Recommended</span> ' : '') +
-        '<span class="fit-dot" style="background:' + esc(m.dot || '#8B949E') + '" aria-hidden="true"></span> ' +
-        '<span class="badge">' + esc(m.label) + '</span><br><span class="secondary">' + esc(m.detail || '') + '</span>' +
-        (m.downloaded ? '<div class="row"><span class="secondary">Downloaded</span></div>' :
-          (m.button ? '<div class="row"><button onclick="post(\\'download\\',{model:' + JSON.stringify(m.model) + '})">Download</button></div>' : '')) + '</div>';
+    document.getElementById('model-picker').innerHTML = m.models.map(function(row) {
+      return '<div class="card' + (row.recommended ? ' card-recommended' : '') + '"><strong style="font-family:var(--vscode-editor-font-family)">' + esc(row.model) + '</strong> ' +
+        (row.recommended ? '<span class="badge">Recommended</span> ' : '') +
+        '<span class="fit-dot" style="background:' + esc(row.dot || '#8B949E') + '" aria-hidden="true"></span> ' +
+        '<span class="badge">' + esc(row.label) + '</span><br><span class="secondary small">' + esc(row.detail || '') + '</span>' +
+        (row.downloaded ? '<div class="row"><span class="secondary">Downloaded</span></div>' :
+          (row.button ? '<div class="row"><button data-download="' + esc(row.model) + '">Download</button></div>' : '')) + '</div>';
     }).join('');
-    document.getElementById('setup-note').textContent = note || '';
+    document.getElementById('cache-note').textContent = m.cacheNote || '';
+    const dot = document.getElementById('setup-dot');
+    dot.className = 'dot ' + (m.serving ? 'dot-ok' : 'dot-warn');
+    // Open while serve isn't reachable, collapsed once it is, unless the
+    // user has toggled it themselves.
+    if (!state.setupTouched && state.serving !== m.serving) { setSetupOpen(!m.serving); }
+    state.serving = m.serving;
+    const banner = document.getElementById('serve-banner');
+    if (m.serving) { banner.style.display = 'none'; }
+    else {
+      banner.style.display = 'flex';
+      document.getElementById('serve-banner-text').textContent = m.serveBanner || 'Serve isn’t running.';
+      const btn = document.getElementById('start-serve-btn');
+      btn.textContent = m.serveButton || 'Start serve';
+      btn.disabled = !m.canStartServe;
+    }
+    document.getElementById('header-status').textContent = m.headerStatus || '';
   }
-  function addMessage(meta, body, isCode) {
-    const el = document.createElement('div'); el.className = 'msg';
-    el.innerHTML = '<div class="meta">' + esc(meta) + '</div><div>' + (isCode ? '<pre class="diff">' + esc(body) + '</pre>' : esc(body)) + '</div>';
-    document.getElementById('messages').appendChild(el);
+  document.getElementById('setup').addEventListener('click', function(e) {
+    const t = e.target.closest('button'); if (!t) { return; }
+    if (t.dataset.copy) { post('copy', { text: t.dataset.copy }); }
+    if (t.dataset.download) { post('download', { model: t.dataset.download }); }
+    if (t.dataset.act === 'changePython') { post('changePython', {}); }
+  });
+
+  function renderContext(c) {
+    const chip = document.getElementById('chip');
+    document.getElementById('chip-text').textContent = c.label;
+    chip.title = c.path || '';
+    chip.className = 'chip' + (c.hasFile ? '' : ' empty');
+    const ex = document.getElementById('explain-btn'), fx = document.getElementById('fix-btn'), ins = document.getElementById('insert-btn');
+    ex.disabled = !c.explain; fx.disabled = !c.fix; ins.disabled = !c.insert;
+    const need = c.hasFile ? 'Select the code first' : 'Open a file first';
+    ex.title = c.explain ? 'Explain ' + c.label : need;
+    fx.title = c.fix ? 'Fix ' + c.label : need;
+    ins.title = c.insert ? (c.hasSelection ? 'Replace ' + c.label : 'Insert at the cursor in ' + c.label) : 'Open a file first';
   }
+
+  function addMessage(meta, body, isCode, cls) {
+    const el = document.createElement('div'); el.className = 'msg' + (cls ? ' ' + cls : '');
+    el.innerHTML = (meta ? '<div class="meta">' + esc(meta) + '</div>' : '') +
+      '<div class="body">' + (isCode ? '<pre class="diff">' + esc(body) + '</pre>' : esc(body)) + '</div>';
+    append(el);
+  }
+  function addNote(text) { const el = document.createElement('div'); el.className = 'note'; el.textContent = text; append(el); }
+
+  let waitingEl = null;
   function showWaiting(title, elapsed, rangeLine) {
-    const el = document.getElementById('waiting'); el.style.display = 'block';
-    el.innerHTML = '<strong>' + esc(title) + '</strong> <span style="float:right;font-family:var(--vscode-editor-font-family)">' + esc(elapsed) + '</span>' +
-      (rangeLine ? '<p class="secondary">' + esc(rangeLine) + '</p>' : '') +
-      '<p class="secondary">There’s no live preview yet. When the answer arrives you can replay how it formed.</p>' +
-      '<button class="secondary" onclick="post(\\'cancel\\',{})">Cancel</button>';
+    if (!waitingEl) { waitingEl = document.createElement('div'); waitingEl.className = 'card'; append(waitingEl); }
+    waitingEl.innerHTML = '<strong>' + esc(title) + '</strong> <span style="float:right;font-family:var(--vscode-editor-font-family)">' + esc(elapsed) + '</span>' +
+      (rangeLine ? '<p class="secondary small">' + esc(rangeLine) + '</p>' : '') +
+      '<p class="secondary small">There’s no live preview yet.</p>' +
+      '<button class="secondary" data-cancel="1">Cancel</button>';
   }
-  function hideWaiting() { document.getElementById('waiting').style.display = 'none'; }
-  function showResult(result) {
-    const el = document.getElementById('result'); el.style.display = 'block';
-    const diffHtml = result.diff.map(function(d) {
+  function hideWaiting() { if (waitingEl) { waitingEl.remove(); waitingEl = null; } }
+
+  function showResult(r) {
+    const el = document.createElement('div'); el.className = 'card'; el.dataset.id = r.id;
+    const diffHtml = r.diff.map(function(d) {
       const cls = d.kind === 'add' ? 'add' : d.kind === 'remove' ? 'remove' : '';
       const prefix = d.kind === 'add' ? '+' : d.kind === 'remove' ? '-' : ' ';
       return '<span class="' + cls + '">' + esc(prefix + d.text) + '</span>';
     }).join('\\n');
-    const checksHtml = result.checks ? result.checks.map(function(c) {
+    const checksHtml = r.checks ? r.checks.map(function(c) {
       return '<span>' + (c.pass ? '✓ ' : '✗ ') + esc(c.name) + (c.message ? ' — ' + esc(c.message) : '') + '</span>';
     }).join(' · ') : '';
-    const warnsHtml = result.warnings ? result.warnings.map(function(w) { return '<span>⚠ ' + esc(w) + '</span>'; }).join(' · ') : '';
-    el.innerHTML = '<div><span>' + esc(result.meta) + '</span><span style="float:right">' + esc(result.time) + '</span></div>' +
+    const warnsHtml = r.warnings ? r.warnings.map(function(w) { return '<span>! ' + esc(w) + '</span>'; }).join(' · ') : '';
+    el.innerHTML = '<div><span>' + esc(r.meta) + '</span><span style="float:right">' + esc(r.time) + '</span></div>' +
+      '<div class="secondary small">' + esc(r.contextLabel) + '</div>' +
       '<pre class="diff">' + diffHtml + '</pre>' +
-      (result.checks ? '<div>' + checksHtml + (warnsHtml ? ' · ' + warnsHtml : '') + '</div>' : '') +
-      '<div class="warning">' + esc(result.warning) + '</div>' +
+      (r.checks ? '<div class="small">' + checksHtml + (warnsHtml ? ' · ' + warnsHtml : '') + '</div>' : '') +
+      '<div class="' + (r.blocked ? 'blocked' : 'warning') + '">' + esc(r.warning) + '</div>' +
       '<div class="row">' +
-      '<button id="accept-btn">' + esc(result.acceptLabel || 'Accept') + '</button>' +
-      '<button id="reject-btn" class="secondary">' + esc(result.rejectLabel || 'Reject') + '</button>' +
-      '<button id="watch-btn" class="secondary" ' + (result.replayAvailable ? '' : 'disabled') + '>' + esc(result.replayAvailable ? 'Watch diffusion' : 'Replay not available for this model') + '</button>' +
+      '<button data-accept="' + esc(r.id) + '"' + (r.blocked ? ' disabled aria-disabled="true" title="Turned off: the proposed file has a syntax error"' : '') + (r.acceptPrimary ? '' : ' class="secondary"') + '>' + esc(r.acceptLabel) + '</button>' +
+      '<button data-reject="' + esc(r.id) + '"' + (r.acceptPrimary ? ' class="secondary"' : '') + '>' + esc(r.rejectLabel) + '</button>' +
+      (r.replayAvailable ? '<button data-watch="' + esc(r.id) + '" class="secondary">Watch diffusion</button>' : '') +
       '</div>';
-    document.getElementById('accept-btn').onclick = function() { post('accept', {}); };
-    document.getElementById('reject-btn').onclick = function() { post('reject', {}); };
-    document.getElementById('watch-btn').onclick = function() { post('watch', {}); };
+    append(el);
   }
+  function dismissCard(id, note) {
+    const el = log.querySelector('.card[data-id="' + CSS.escape(id) + '"]');
+    if (el) { el.remove(); }
+    if (note) { addNote(note); }
+  }
+  log.addEventListener('click', function(e) {
+    const t = e.target.closest('button'); if (!t) { return; }
+    if (t.dataset.cancel) { post('cancel', {}); }
+    if (t.dataset.accept && !t.disabled) { t.disabled = true; post('accept', { id: t.dataset.accept }); }
+    if (t.dataset.reject) { t.disabled = true; post('reject', { id: t.dataset.reject }); }
+    if (t.dataset.watch) { post('watch', { id: t.dataset.watch }); }
+  });
+
   function renderReplay() {
     const frame = state.frames[state.frameIndex] || null;
     document.getElementById('replay-sub').textContent = state.replaySub || '';
@@ -235,21 +349,20 @@ export function getWebviewHtml(): string {
     const slider = document.getElementById('replay-slider');
     slider.max = String(Math.max(0, state.frames.length - 1)); slider.value = String(state.frameIndex);
   }
+
   document.getElementById('start-serve-btn').onclick = function() { post('startServe', {}); };
   document.getElementById('check-again-btn').onclick = function() { post('checkAgain', {}); };
   document.getElementById('explain-btn').onclick = function() { post('action', { action: 'explain' }); };
   document.getElementById('fix-btn').onclick = function() { post('action', { action: 'fix' }); };
   document.getElementById('insert-btn').onclick = function() { post('action', { action: 'insert' }); };
   document.getElementById('send-btn').onclick = function() {
-    const v = document.getElementById('composer').value; if (v.trim()) { post('chat', { text: v }); }
+    const box = document.getElementById('composer');
+    const v = box.value; if (v.trim()) { post('chat', { text: v }); box.value = ''; }
   };
-  // Ctrl+Enter / Cmd+Enter sends; plain Enter still inserts a newline,
-  // so multi-line composing is unchanged.
   document.getElementById('composer').addEventListener('keydown', function(e) {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); document.getElementById('send-btn').click(); }
   });
-  document.getElementById('setup-btn').onclick = function() { post('showSetup', {}); };
-  document.getElementById('back-link').onclick = function(e) { e.preventDefault(); show('chat'); };
+  document.getElementById('back-link').onclick = function() { document.getElementById('replay-screen').style.display = 'none'; };
   document.getElementById('replay-prev').onclick = function() { state.frameIndex = Math.max(0, state.frameIndex - 1); renderReplay(); };
   document.getElementById('replay-next').onclick = function() { state.frameIndex = Math.min(state.frames.length - 1, state.frameIndex + 1); renderReplay(); };
   document.getElementById('replay-slider').oninput = function(e) { state.frameIndex = Number(e.target.value); renderReplay(); };
@@ -260,33 +373,25 @@ export function getWebviewHtml(): string {
       state.frameIndex++; renderReplay();
     }, 220);
   };
+
   window.addEventListener('message', function(event) {
     const m = event.data;
-    if (m.type === 'setup') { renderSetup(m.steps, m.models, m.note); show('setup'); }
-    if (m.type === 'ready') {
-      const s = String(m.status || '');
-      const h = document.getElementById('header-status');
-      if (s.charAt(0) === '●') { h.innerHTML = '<span class="serving-dot">●</span> ' + esc(s.slice(1).trim()); }
-      else { h.textContent = s; }
-      show('chat');
-    }
+    if (m.type === 'setup') { renderSetup(m); }
+    if (m.type === 'context') { renderContext(m); }
     if (m.type === 'status') { document.getElementById('header-status').textContent = m.status; }
-    // Chat-screen content always switches to Chat first. This is the
-    // one action-visibility mechanism (the extension does not also
-    // post a show-chat before these): without it, a Fix/Explain
-    // answer posted while Setup was visible landed in the hidden
-    // chat-screen div. 'waitingDone' alone does not switch, it only
-    // hides the waiting card after a shown wait.
-    if (m.type === 'message') { show('chat'); addMessage(m.meta, m.body, m.isCode); }
-    if (m.type === 'waiting') { show('chat'); showWaiting(m.title, m.elapsed, m.rangeLine); }
+    if (m.type === 'userMessage') { addMessage(m.contextLabel ? 'Sent: ' + m.contextLabel : '', m.text, false, 'user'); }
+    if (m.type === 'message') { addMessage(m.meta, m.body, m.isCode); }
+    if (m.type === 'hint') { addNote(m.text); }
+    if (m.type === 'waiting') { showWaiting(m.title, m.elapsed, m.rangeLine); }
     if (m.type === 'waitingDone') { hideWaiting(); }
-    if (m.type === 'result') { show('chat'); showResult(m.result); }
+    if (m.type === 'result') { showResult(m.result); }
+    if (m.type === 'dismiss') { dismissCard(m.id, m.note); }
     if (m.type === 'replay') {
       state.frames = m.frames; state.frameIndex = 0; state.totalSteps = m.totalSteps; state.replaySub = m.sub;
-      show('replay'); renderReplay();
+      document.getElementById('replay-screen').style.display = 'block'; renderReplay();
     }
-    if (m.type === 'hint') { show('chat'); addMessage('', m.text, false); }
   });
+  setSetupOpen(true);
   post('ready', {});
 </script>
 </body>

@@ -7,8 +7,8 @@ parked **SDAR code LoRA** idea (scaling SDAR 1.7B LoRA fine-tuning into
 a larger coding model, parked 2026-11-01). Never call this extension
 just "ollada", and never call that parked model "ollada-code".
 
-Version: 0.1.3, independent of ollada 0.3.4. Publisher: OpenSourceRulesz.
-0.1.0, 0.1.1, 0.1.2, and 0.1.3 are published on the VS Code Marketplace as OpenSourceRulesz.ollada-code.
+Version: 0.1.4 in this source, independent of ollada 0.3.4. Publisher: OpenSourceRulesz.
+0.1.0, 0.1.1, 0.1.2, and 0.1.3 are published on the VS Code Marketplace as OpenSourceRulesz.ollada-code. 0.1.4 is a dogfood bug-fix round and is not published.
 Install from VS Code Extensions search, not by transferring a .vsix file.
 GitHub repo: github.com/OpenSourceRulesz/ollada-code.
 
@@ -16,13 +16,21 @@ GitHub repo: github.com/OpenSourceRulesz/ollada-code.
 
 - Guided Setup (Python, ollada, model picker, serve), nothing downloads
   or starts until you click. pip is never run by the extension.
-- Chat panel that knows the active file and selection automatically.
+- Chat in the Ollada sidebar view, visible immediately. Setup is a
+  collapsible section at the top of the same view (open while serve
+  isn't reachable), not a gate in front of Chat.
+- Chat knows the active file and selection. The file and selection are
+  captured when you click, for files inside or outside the workspace,
+  and a context chip always shows the file and lines that will be sent.
+  With no file or no selection, Explain and Fix are turned off instead
+  of sending an empty prompt.
 - Three commands only: Explain selection, Fix selection, Insert at cursor.
 - Diff preview with Accept/Reject. Accept is never automatic, one
   WorkspaceEdit, one undo step, and Accept is disabled if the file
   changed while ollada was working.
 - Local Python checks before accepting, run on the spliced file.
-- Watch-after diffusion replay for SDAR, real snapshots only.
+- Watch-after diffusion replay for SDAR, real snapshots only. With no
+  snapshots there is no Replay button at all.
 
 Out of Phase 1, deliberately: autocomplete, terminal commands run by
 the model, multi-file edits, agent loops, streaming, live animation,
@@ -37,9 +45,9 @@ bundled models.
   patch is not merged and not on PyPI).
 - Minimum serve version 0.3.4 for Setup, Chat, Explain, Fix, Insert.
   Replay needs a future serve version that returns snapshots; until
-  then the Watch diffusion button is disabled with
-  "Replay not available for this model" for every response, whatever
-  the family, including every stock 0.3.4 response. Frames are never
+  then there is no Watch diffusion button on any card, whatever the
+  family, including every stock 0.3.4 response. Setup has one line
+  saying replay needs a future ollada serve. Frames are never
   synthesized. The counter, when snapshots exist, is steps elapsed /
   total steps, never tokens.
 - Fix prompt, verbatim from the Dell script tests: "Fix this code.
@@ -49,8 +57,12 @@ bundled models.
 - Explain and Insert prompts are **proposed and untested**, unlike Fix
   which is proven. They are labelled as such in `src/prompts.ts`.
   Do not present Explain or Insert results as measured.
-- Port rule: try 11435, then 11436, 11437, and so on, say which port
-  in the UI, never kill the process holding a port. On the work laptop,
+- Port rule: first reuse an ollada serve that already answers on
+  11435 to 11444 (identified by `/api/version` plus ollada's `/health`
+  shape, so an Ollama on a nearby port is not mistaken for it), and show
+  "Using existing serve on 11437". Only if none answers, try 11435,
+  then 11436, 11437, and so on, say which port in the UI, never kill
+  the process holding a port. On the work laptop,
   Code.exe itself holds 11435 and 11436 LISTENING, so 11437 is the
   expected serve port there.
 - Install, everywhere: CPU `pip install "ollada[cpu,server]"`, GPU
@@ -78,6 +90,8 @@ bundled models.
   failure. Broad except is new work: the original verifier does not
   have it. The prefix/suffix byte-identity drift check is NOT ported:
   it is specific to the `<<HOLE>>` case and Fix/Insert have no hole.
+- A syntax error in the proposed file turns Accept / Insert off;
+  Discard is the only action. Other findings warn but don't block.
 - **Checks passed is never proof of correctness.** The warning box
   always says so when checks pass. The script-test find_max case
   passes checks and still raises TypeError at runtime
@@ -90,7 +104,9 @@ bundled models.
   No fake progress, no fake animation, no tok/s. `eval_count` for
   SDAR is canvas size, not answer tokens, so tok/s is never computed
   from it. Times are wall clock, warm, on this machine.
-- Insert, Phase 1: writes at the cursor, does not read the code after
+- Insert, Phase 1: with code selected, the result replaces the
+  selection (it never inserts a second copy above it). With nothing
+  selected, it writes at the cursor. It does not read the code after
   the cursor. API-level fill-in-the-middle is Phase 2 only, and must
   never be called "true FIM" without that qualifier. Insert still
   shows wall-clock time in the meta row in a real build, even though
@@ -118,12 +134,26 @@ bundled models.
   (panel HTML/CSS/JS), `src/fitLabels.ts`, `src/ports.ts`,
   `src/waiting.ts`, `src/prompts.ts`, `src/replay.ts`,
   `src/splice.ts`, `src/checks.ts` (spawns the Python checker),
+  `src/context.ts` (click-time editor snapshot, context chip),
+  `src/proposals.ts` (one id per proposal, syntax gate),
+  `src/python.ts` (which Python to check), `src/cacheScript.ts`
+  (Downloaded check), `src/screen.ts`, and
   `python/checks.py` (stdlib only).
+- Which Python: the `ollada-code.pythonPath` setting if set; otherwise
+  the first of the Python extension's environment, the workspace
+  `.venv`, a `.venv` one folder down (for example `ollada-cpu/.venv`
+  when the workspace is the parent folder), and python on PATH that can
+  import ollada. Setup shows the exact path it checked, and Change
+  Python picks another one.
+- Downloaded check: the same test ollada's `rm` command uses
+  (`scan_cache_dir()` repos against each recipe's source), run from a
+  temp script file. Setup shows the cache folder it scanned and, if the
+  scan fails, the error. On failure it shows Download, never Downloaded.
 - Checks run with the venv Python, exactly like the existing
   fix_file.py workflow, instead of reimplementing Python AST checks
   in TypeScript (which would risk diverging from the proven verifier).
 - Serve starts as a child process of the extension, with an Ollada
-  Serve output channel. If that start fails, the extension shows the
+  output channel, but only when no ollada serve already answers. If that start fails, the extension shows the
   exact external PowerShell command as a copyable fallback, for
   example: `<venv python> -m ollada.cli serve --host 127.0.0.1 --port 11437`.
   Download (pull) runs in a VS Code terminal named `Ollada: pull`,
@@ -137,25 +167,28 @@ bundled models.
   without options if serve rejects it. This is a proposal, not a
   shipped serve feature. Stock 0.3.4 returns no snapshots, so Replay
   stays disabled there, which is the correct behaviour.
-- The side view (activity bar, Ollada) delegates to the full panel:
-  resolving the side view opens the Beside panel, which carries the
-  complete message handler. This avoids two live webviews with
-  divergent state in Phase 1.
+- Chat lives in the side view (activity bar, Ollada), the only webview.
+  0.1.3 opened a Beside editor panel, which took focus away from the
+  editor, so the extension saw no active file. Commands from the
+  palette snapshot the editor first, then reveal the view.
 
 ## Layout
 
-- `package.json` — publisher OpenSourceRulesz, name ollada-code, 0.1.3.
+- `package.json` — publisher OpenSourceRulesz, name ollada-code, 0.1.4.
 - `src/` — TypeScript source (see above).
 - `python/checks.py` — bundled checker, stdlib only.
 - `resources/icon.png` — 128x128 PNG six-dot icon, generated by
   `scripts/make_icon.py` from the logo.svg coordinates.
-- `test/` — node:test unit tests for fit labels, port picking,
-  waiting, replay, and splice.
+- `test/` — node:test tests for fit labels, port picking and serve
+  reuse, waiting, replay, splice, context capture, proposals and the
+  syntax gate (with the real `checks.py`), Python discovery, the panel
+  layout, and the Downloaded check (with the real `scan_cache_dir`;
+  set `OLLADA_TEST_PYTHON` to a Python with ollada installed).
 - `test-fixtures/` — checks fixtures and recreated fix fixtures.
   The fix fixtures are recreations from the briefing descriptions,
   not the original script-test files (see
   `test-fixtures/fix/README.md`).
-- `ollada-code-0.1.3.vsix` — packaged build, if packaging succeeded.
+- `ollada-code-0.1.4.vsix` — packaged build, if packaging succeeded.
 
 ## Develop
 
@@ -177,5 +210,5 @@ the Marketplace (Extensions view, search ollada-code, publisher
 OpenSourceRulesz), run Setup with
 ollada 0.3.4 `cpu,server` in the venv, start serve, download sdar:1.7b,
 then Fix the 9 script-test files through the UI and report times,
-correctness, checks, and the always-shown warning. Expect Replay to be
-disabled on stock 0.3.4 — that is correct, not a bug.
+correctness, checks, and the always-shown warning. Expect no Replay
+button on stock 0.3.4 — that is correct, not a bug.
