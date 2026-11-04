@@ -11,11 +11,11 @@
 // put in an error message (redact). Code sent to Mercury leaves the machine;
 // the extension warns before the first send (see extension.ts).
 // API shape: OpenAI-compatible chat completions at
-// https://api.inceptionlabs.ai/v1/chat/completions, model "mercury-2".
+// https://api.inceptionlabs.ai/v1/chat/completions, model "mercury-3".
 
 export const MERCURY_HOST = 'api.inceptionlabs.ai';
 export const MERCURY_BASE = 'https://api.inceptionlabs.ai/v1';
-export const MERCURY_MODELS: readonly string[] = ['mercury-2'];
+export const MERCURY_MODELS: readonly string[] = ['mercury-3'];
 export const MERCURY_SECRET = 'ollada-code.mercury.apiKey';
 export const MERCURY_CONSENT = 'ollada-code.mercury.alwaysSend';
 
@@ -87,7 +87,7 @@ export async function mercuryChat(fetchImpl: FetchLike, key: string, model: stri
 /**
  * Accept a key only if Inception's API accepts it and offers a Mercury model.
  * GET /v1/models first; if that route isn't available (404/405), one tiny
- * chat request to mercury-2 decides instead.
+ * chat request to mercury-3 decides instead.
  */
 export async function checkKey(fetchImpl: FetchLike, key: string): Promise<{ ok: boolean; message: string }> {
   const trimmed = key.trim();

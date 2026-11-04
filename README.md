@@ -48,11 +48,11 @@ GitHub repo: github.com/OpenSourceRulesz/ollada-code.
 
 ## Mercury, the optional cloud model (0.1.8)
 
-- Local ollada models stay the default. Mercury (`mercury-2`, Inception
+- Local ollada models stay the default. Mercury (`mercury-3`, Inception
   Labs) is the only cloud model, and it's off until you connect it.
 - Only Inception's Mercury API, enforced three ways: the endpoint is fixed
   to `https://api.inceptionlabs.ai/v1` (no URL field; any other host or a
-  non-https URL is refused in code), only `mercury-2` can be sent, and a key
+  non-https URL is refused in code), only `mercury-3` can be sent, and a key
   is saved only after Inception's own API accepts it and lists a Mercury
   model.
 - Connect from Setup (Cloud model) or the command "Ollada: Connect Mercury".

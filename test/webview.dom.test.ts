@@ -222,24 +222,24 @@ test('one header row: the model picker carries the serve status, no duplicate st
 
 test('Mercury: connect offered when not connected; cloud option only appears once connected', () => {
   const { $, $$, send, posted } = load({ reduceMotion: true });
-  send({ ...SETUP, mercury: { connected: false, selected: false, model: 'mercury-2' }, cloudActive: false });
+  send({ ...SETUP, mercury: { connected: false, selected: false, model: 'mercury-3' }, cloudActive: false });
   assert.ok($('#cloud')!.textContent!.includes('leaves this machine'), 'the warning is always visible in Setup');
   assert.deepEqual($$('#model-select option').map((o) => o.textContent), ['sdar:1.7b', 'sdar:4b'], 'no cloud option before a key is saved');
   ($('#cloud [data-act="connectMercury"]') as HTMLButtonElement).click();
   assert.deepEqual(posted.at(-1), { type: 'connectMercury' });
-  send({ ...SETUP, mercury: { connected: true, selected: false, model: 'mercury-2' }, cloudActive: false });
-  assert.deepEqual($$('#model-select option').map((o) => o.textContent), ['sdar:1.7b', 'sdar:4b', 'mercury-2']);
+  send({ ...SETUP, mercury: { connected: true, selected: false, model: 'mercury-3' }, cloudActive: false });
+  assert.deepEqual($$('#model-select option').map((o) => o.textContent), ['sdar:1.7b', 'sdar:4b', 'mercury-3']);
   assert.deepEqual($$('#model-select optgroup').map((g) => g.getAttribute('label')), ['On this machine', 'Cloud (Inception)']);
   ($('#cloud [data-act="useMercury"]') as HTMLButtonElement).click();
-  assert.deepEqual(posted.at(-1), { type: 'selectModel', model: 'mercury-2' });
+  assert.deepEqual(posted.at(-1), { type: 'selectModel', model: 'mercury-3' });
   ($('#cloud [data-act="disconnectMercury"]') as HTMLButtonElement).click();
   assert.deepEqual(posted.at(-1), { type: 'disconnectMercury' });
 });
 
 test('Mercury in use: header shows cloud status, no serve banner, cloud turns are tagged', () => {
   const { $, send } = load({ reduceMotion: true });
-  send({ ...SETUP, serving: false, serveBanner: 'Serve isn’t running.', headerStatus: 'mercury-2, cloud (Inception)', mercury: { connected: true, selected: true, model: 'mercury-2' }, cloudActive: true });
-  assert.equal(($('#model-select') as HTMLSelectElement).value, 'mercury-2');
+  send({ ...SETUP, serving: false, serveBanner: 'Serve isn’t running.', headerStatus: 'mercury-3, cloud (Inception)', mercury: { connected: true, selected: true, model: 'mercury-3' }, cloudActive: true });
+  assert.equal(($('#model-select') as HTMLSelectElement).value, 'mercury-3');
   assert.ok($('#status-dot')!.classList.contains('is-cloud'));
   assert.equal($('#serve-banner')!.style.display, 'none', 'no local-serve nag while the cloud model is in use');
   assert.ok($('#cloud')!.textContent!.includes('In use'));

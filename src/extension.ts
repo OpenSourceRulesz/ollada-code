@@ -581,7 +581,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!result.ok) { void vscode.window.showErrorMessage(`Mercury not connected: ${result.message}`); return; }
     await context.secrets.store(MERCURY_SECRET, key.trim());
     mercuryConnected = true;
-    void vscode.window.showInformationMessage('Mercury is connected. Pick mercury-2 in the model menu to use it.');
+    void vscode.window.showInformationMessage('Mercury is connected. Pick mercury-3 in the model menu to use it.');
     void refreshSetup();
   }
   async function disconnectMercury(): Promise<void> {

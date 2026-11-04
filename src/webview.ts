@@ -586,7 +586,7 @@ export function getWebviewHtml(fonts?: WebviewFonts): string {
   function renderCloud(mc) {
     const box = document.getElementById('cloud'); if (!box) { return; }
     box.className = 'cloud' + (mc.selected && mc.connected ? ' on' : '');
-    const head = '<div style="display:flex;align-items:center;gap:8px"><span class="model-name">' + esc(mc.model || 'mercury-2') + '</span><span class="cloud-tag">cloud</span><span class="muted small">Inception Labs</span></div>';
+    const head = '<div style="display:flex;align-items:center;gap:8px"><span class="model-name">' + esc(mc.model || 'mercury-3') + '</span><span class="cloud-tag">cloud</span><span class="muted small">Inception Labs</span></div>';
     const warn = '<p class="small muted">Mercury runs on Inception’s servers. Code you send to it leaves this machine, and usage is billed to your Inception account. ollada-code only connects to Inception’s API, and asks before the first send.</p>';
     let actions;
     if (!mc.connected) {
@@ -594,7 +594,7 @@ export function getWebviewHtml(fonts?: WebviewFonts): string {
     } else if (mc.selected) {
       actions = '<span class="small" style="color:var(--link);margin-right:8px">In use</span><button class="text-btn" data-act="disconnectMercury">Disconnect</button>';
     } else {
-      actions = '<button class="btn-ghost" data-act="useMercury">Use mercury-2</button> <button class="text-btn" data-act="disconnectMercury">Disconnect</button>';
+      actions = '<button class="btn-ghost" data-act="useMercury">Use mercury-3</button> <button class="text-btn" data-act="disconnectMercury">Disconnect</button>';
     }
     box.innerHTML = head + warn + '<div class="actions" style="align-items:center">' + actions + '</div>' +
       (mc.connected ? '<p class="small muted" style="margin:8px 0 0">Key saved in VS Code’s secret storage.</p>' : '');
@@ -607,7 +607,7 @@ export function getWebviewHtml(fonts?: WebviewFonts): string {
       if (b.dataset.act === 'changePython') { post('changePython', {}); }
       if (b.dataset.act === 'connectMercury') { post('connectMercury', {}); }
       if (b.dataset.act === 'disconnectMercury') { post('disconnectMercury', {}); }
-      if (b.dataset.act === 'useMercury') { post('selectModel', { model: 'mercury-2' }); }
+      if (b.dataset.act === 'useMercury') { post('selectModel', { model: 'mercury-3' }); }
       return;
     }
     const row = e.target.closest('[data-select]'); if (row) { post('selectModel', { model: row.dataset.select }); }

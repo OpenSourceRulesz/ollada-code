@@ -20,25 +20,25 @@ test('only Inception’s Mercury API: fixed https host, fixed paths', () => {
 });
 
 test('only Mercury models can be sent', () => {
-  assert.equal(isMercuryModel('mercury-2'), true);
-  for (const other of ['gpt-4o', 'claude-3', 'sdar:4b', 'mercury-2x', '', undefined]) { assert.equal(isMercuryModel(other as string), false); }
+  assert.equal(isMercuryModel('mercury-3'), true);
+  for (const other of ['gpt-4o', 'claude-3', 'sdar:4b', 'mercury-3x', '', undefined]) { assert.equal(isMercuryModel(other as string), false); }
   assert.throws(() => chatBody('gpt-4o', 'hi'), /Only Mercury models/);
-  assert.deepEqual(chatBody('mercury-2', 'hi'), { model: 'mercury-2', messages: [{ role: 'user', content: 'hi' }] });
+  assert.deepEqual(chatBody('mercury-3', 'hi'), { model: 'mercury-3', messages: [{ role: 'user', content: 'hi' }] });
 });
 
 test('chat: sends to Inception with a bearer key and returns the answer text', async () => {
   const calls: Call[] = [];
   const f = fakeFetch({ 'POST /v1/chat/completions': { status: 200, body: { choices: [{ message: { role: 'assistant', content: 'result = cmath.sqrt(-1)' } }] } } }, calls);
-  const text = await mercuryChat(f, KEY, 'mercury-2', 'Fix this code.');
+  const text = await mercuryChat(f, KEY, 'mercury-3', 'Fix this code.');
   assert.equal(text, 'result = cmath.sqrt(-1)');
   assert.equal(calls[0].url, 'https://api.inceptionlabs.ai/v1/chat/completions');
   assert.equal(calls[0].headers?.Authorization, `Bearer ${KEY}`);
-  assert.equal(JSON.parse(calls[0].body ?? '{}').model, 'mercury-2');
+  assert.equal(JSON.parse(calls[0].body ?? '{}').model, 'mercury-3');
 });
 
 test('errors are specific and never contain the key', async () => {
   const f = fakeFetch({ 'POST /v1/chat/completions': { status: 401, body: { error: { message: `bad key ${KEY}` } } } });
-  await assert.rejects(mercuryChat(f, KEY, 'mercury-2', 'x'), /Mercury rejected the API key/);
+  await assert.rejects(mercuryChat(f, KEY, 'mercury-3', 'x'), /Mercury rejected the API key/);
   const msg = mercuryError(400, JSON.stringify({ error: { message: `invalid request for ${KEY}` } }), KEY);
   assert.ok(!msg.includes(KEY));
   assert.match(msg, /\[key hidden\]/);
@@ -49,14 +49,14 @@ test('errors are specific and never contain the key', async () => {
 });
 
 test('checkKey: saves only keys Inception accepts and that offer Mercury', async () => {
-  assert.equal((await checkKey(fakeFetch({ 'GET /v1/models': { status: 200, body: { data: [{ id: 'mercury-2' }, { id: 'mercury-edit-2' }] } } }), KEY)).ok, true);
+  assert.equal((await checkKey(fakeFetch({ 'GET /v1/models': { status: 200, body: { data: [{ id: 'mercury-3' }, { id: 'mercury-edit-2' }] } } }), KEY)).ok, true);
   const rejected = await checkKey(fakeFetch({ 'GET /v1/models': { status: 401, body: {} } }), KEY);
   assert.equal(rejected.ok, false);
   assert.match(rejected.message, /rejected this key/);
   const noMercury = await checkKey(fakeFetch({ 'GET /v1/models': { status: 200, body: { data: [{ id: 'gpt-4o' }] } } }), KEY);
   assert.equal(noMercury.ok, false, 'a key that lists no Mercury model is refused');
   assert.equal((await checkKey(fakeFetch({}), 'short')).ok, false);
-  // /models not available: one tiny chat to mercury-2 decides
+  // /models not available: one tiny chat to mercury-3 decides
   const viaChat = await checkKey(fakeFetch({ 'GET /v1/models': { status: 404, body: {} }, 'POST /v1/chat/completions': { status: 200, body: { choices: [{ message: { content: 'OK' } }] } } }), KEY);
   assert.equal(viaChat.ok, true);
   const offline: FetchLike = async () => { throw new TypeError('fetch failed'); };
