@@ -7,7 +7,9 @@
     "onCommand:ollada-code.insertAtCursor",
     "onCommand:ollada-code.startServe",
     "onCommand:ollada-code.checkAgain",
-    "onCommand:ollada-code.changePython"
+    "onCommand:ollada-code.changePython",
+    "onCommand:ollada-code.connectMercury",
+    "onCommand:ollada-code.disconnectMercury"
   ],
   "categories": [
     "AI",
@@ -42,6 +44,14 @@
       {
         "command": "ollada-code.changePython",
         "title": "Ollada: Change Python"
+      },
+      {
+        "command": "ollada-code.connectMercury",
+        "title": "Ollada: Connect Mercury (Inception API key)"
+      },
+      {
+        "command": "ollada-code.disconnectMercury",
+        "title": "Ollada: Disconnect Mercury"
       }
     ],
     "configuration": {
@@ -60,6 +70,24 @@
           "default": 0,
           "description": "Preferred serve port. 0 means: try 11435, then 11436, 11437, and so on. The extension never kills the process holding a port.",
           "type": "number"
+        },
+        "ollada-code.appearance": {
+          "type": "string",
+          "enum": [
+            "brand",
+            "theme"
+          ],
+          "default": "brand",
+          "enumDescriptions": [
+            "The Ollada look: Geist, navy and periwinkle, like the website.",
+            "Follow your VS Code theme's colours and fonts."
+          ],
+          "description": "How the Ollada panel looks."
+        },
+        "ollada-code.animation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Masked-block animation while the model works and when the answer arrives. It is an illustration, not a recording of how the model generated the answer. Always off when your system asks for reduced motion."
         }
       },
       "title": "ollada-code"
@@ -85,10 +113,12 @@
   },
   "description": "Chat, Fix, and Insert in VS Code, powered by your local ollada serve. Phase 1 only: no autocomplete, no agent loop, no streaming, no telemetry, no bundled models.",
   "devDependencies": {
+    "@types/jsdom": "^21.1.7",
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.90.0",
     "@vscode/vsce": "^4.1.0",
     "esbuild": "^0.23.0",
+    "jsdom": "^24.1.3",
     "typescript": "^5.5.0"
   },
   "displayName": "ollada-code",
@@ -109,7 +139,7 @@
     "watch": "tsc -watch -p ./",
     "bundle": "node esbuild.js"
   },
-  "version": "0.1.6",
+  "version": "0.1.8",
   "repository": {
     "type": "git",
     "url": "https://github.com/OpenSourceRulesz/ollada-code.git"

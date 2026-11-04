@@ -28,7 +28,7 @@ test('layout: header first, log in the middle, actions and composer pinned at th
 test('no dead Replay button: Watch diffusion is only rendered when snapshots exist', () => {
   const html = getWebviewHtml();
   assert.ok(!html.includes('Replay not available for this model'));
-  assert.ok(html.includes("(r.replayAvailable ? '<button data-watch="));
+  assert.ok(html.includes("(r.replayAvailable ? '<button class=\"btn-ghost\" data-watch="));
 });
 
 test('download button: hidden when downloaded, red, or Unknown; shown otherwise', () => {

@@ -7,7 +7,9 @@ parked **SDAR code LoRA** idea (scaling SDAR 1.7B LoRA fine-tuning into
 a larger coding model, parked 2026-11-01). Never call this extension
 just "ollada", and never call that parked model "ollada-code".
 
-Version: 0.1.6 in this source, independent of ollada 0.3.4. Publisher: OpenSourceRulesz.
+Version: 0.1.8 in this source, independent of ollada 0.3.4. Publisher: OpenSourceRulesz.
+0.1.8 adds one optional cloud model, Mercury from Inception Labs, on top of the 0.1.7 redesign. Nothing else changed. Not published.
+0.1.7 is a UI redesign and is not published: the website look (Geist, navy, periwinkle) with a theme option, Chat and Setup tabs, collapsible turns that keep what was sent and the diff, clear and collapse, a growing composer, and a masked-block animation while the model works and when the answer arrives.
 0.1.0 through 0.1.5 are published on the VS Code Marketplace as OpenSourceRulesz.ollada-code. 0.1.6 is not yet published: Fix sends Python file-header imports as labelled context (chip shows “+ imports”), Fix-with-user-instruction as a one-time retry after Discard, and a hard block on import-only Fix proposals.
 Install from VS Code Extensions search, not by transferring a .vsix file.
 GitHub repo: github.com/OpenSourceRulesz/ollada-code.
@@ -16,9 +18,21 @@ GitHub repo: github.com/OpenSourceRulesz/ollada-code.
 
 - Guided Setup (Python, ollada, model picker, serve), nothing downloads
   or starts until you click. pip is never run by the extension.
-- Chat in the Ollada sidebar view, visible immediately. Setup is a
-  collapsible section at the top of the same view (open while serve
-  isn't reachable), not a gate in front of Chat.
+- Chat in the Ollada sidebar view, visible immediately, with Setup as a
+  second tab and a model switcher in the header. When serve isn't
+  reachable, a banner on Chat offers Start serve and Open Setup.
+- Every action is one collapsible turn: what was sent (the code), the
+  answer or the proposal (diff, checks), and the outcome (Applied,
+  Discarded, Replaced, ...). The diff stays after Accept or Discard.
+  Starting a new turn collapses finished ones; Collapse all and Clear
+  sit in the header. Clear also drops any pending proposal.
+- Animation (setting `ollada-code.animation`, default on, always off
+  for reduced motion): masked blocks while the model works, then the
+  real answer resolves in over about a second; click to skip, Replay
+  to watch it again. It is an illustration, not a recording of how
+  the model generated the answer (the answer arrives whole from serve
+  0.3.4), and the panel's info note says so. The text left on screen
+  is always exactly the model's answer.
 - Chat knows the active file and selection. The file and selection are
   captured when you click, for files inside or outside the workspace,
   and a context chip always shows the file and lines that will be sent.
@@ -31,6 +45,29 @@ GitHub repo: github.com/OpenSourceRulesz/ollada-code.
 - Local Python checks before accepting, run on the spliced file.
 - Watch-after diffusion replay for SDAR, real snapshots only. With no
   snapshots there is no Replay button at all.
+
+## Mercury, the optional cloud model (0.1.8)
+
+- Local ollada models stay the default. Mercury (`mercury-2`, Inception
+  Labs) is the only cloud model, and it's off until you connect it.
+- Only Inception's Mercury API, enforced three ways: the endpoint is fixed
+  to `https://api.inceptionlabs.ai/v1` (no URL field; any other host or a
+  non-https URL is refused in code), only `mercury-2` can be sent, and a key
+  is saved only after Inception's own API accepts it and lists a Mercury
+  model.
+- Connect from Setup (Cloud model) or the command "Ollada: Connect Mercury".
+  The key is typed into a VS Code password box, never into the panel, is
+  kept in VS Code's secret storage (not settings), and never appears in
+  error messages. "Ollada: Disconnect Mercury" deletes it and switches back
+  to the last local model.
+- Warnings: Setup always says that code sent to Mercury leaves the machine
+  and is billed to the Inception account. Before the first send, a modal
+  asks again (Send to Mercury / Always send to Mercury / cancel). The model
+  menu groups models into "On this machine" and "Cloud (Inception)", the
+  header dot turns periwinkle, and every cloud turn carries a "cloud" tag.
+- Requests use Inception's OpenAI-compatible chat completions. Fix, Explain,
+  Replace, Retry fix and chat use the same prompts as local models; Python
+  checks still run locally; the syntax gate and Accept/Reject are the same.
 
 Out of Phase 1, deliberately: autocomplete, terminal commands run by
 the model, multi-file edits, agent loops, streaming, live animation,
@@ -111,9 +148,11 @@ bundled models.
   never be called "true FIM" without that qualifier. Insert still
   shows wall-clock time in the meta row in a real build, even though
   the mockup example is illustrative and unmeasured.
-- Theme and identity: VS Code theme variables for backgrounds, text,
-  borders, inputs, and diff colors. Ollada navy is never forced into
-  the editor. Six-dot Settling mark only (six #6C6FD8 circles). The
+- Theme and identity: the panel uses the Ollada website look by
+  default (setting `ollada-code.appearance` = `brand`): navy surfaces,
+  periwinkle accent, Geist and Geist Mono. `theme` switches surfaces,
+  text, diff colours and fonts to the user's VS Code theme. The editor
+  itself is never restyled. Six-dot Settling mark only (six #6C6FD8 circles). The
   pig is retired history, not used. Accent #6C6FD8 is logo, icons,
   active markers, slider, and large graphics only, never small text
   or links on light themes. Primary buttons and text accents are
@@ -158,10 +197,11 @@ bundled models.
   example: `<venv python> -m ollada.cli serve --host 127.0.0.1 --port 11437`.
   Download (pull) runs in a VS Code terminal named `Ollada: pull`,
   as in the spec.
-- UI font is the VS Code font (`var(--vscode-font-family)`); code uses
-  the editor font. Bundled Geist is deferred
-  (spec 10c: the Geist license for bundling is unchecked); 0.1.0,
-  0.1.1, 0.1.2, and 0.1.3 use the VS Code font.
+- Fonts: Geist and Geist Mono variable woff2 files ship in
+  `media/fonts/`, loaded locally (no network). They are licensed under
+  the SIL Open Font License 1.1; the license ships beside them as
+  `media/fonts/GEIST-LICENSE.txt`. The `theme` appearance uses the VS
+  Code fonts instead.
 - Replay snapshots: the extension sends `options.record_snapshots: true`
   on the first chat attempt, as proposed in spec 6.7, and retries once
   without options if serve rejects it. This is a proposal, not a
@@ -174,7 +214,8 @@ bundled models.
 
 ## Layout
 
-- `package.json` — publisher OpenSourceRulesz, name ollada-code, 0.1.6.
+- `package.json` — publisher OpenSourceRulesz, name ollada-code, 0.1.7.
+- `media/fonts/` — Geist and Geist Mono woff2 plus their OFL license.
 - `src/` — TypeScript source (see above).
 - `python/checks.py` — bundled checker, stdlib only.
 - `resources/icon.png` — 128x128 PNG six-dot icon, generated by
@@ -183,12 +224,15 @@ bundled models.
   reuse, waiting, replay, splice, context capture, proposals and the
   syntax gate (with the real `checks.py`), Python discovery, the panel
   layout, and the Downloaded check (with the real `scan_cache_dir`;
-  set `OLLADA_TEST_PYTHON` to a Python with ollada installed).
+  set `OLLADA_TEST_PYTHON` to a Python with ollada installed). Panel
+  behaviour tests load the real webview in jsdom (a dev-only
+  dependency) and drive it with the extension's messages: tabs, turns,
+  the result lifecycle, the reveal, Clear, the theme switch.
 - `test-fixtures/` — checks fixtures and recreated fix fixtures.
   The fix fixtures are recreations from the briefing descriptions,
   not the original script-test files (see
   `test-fixtures/fix/README.md`).
-- `ollada-code-0.1.6.vsix` — packaged build, if packaging succeeded.
+- `ollada-code-0.1.7.vsix` — packaged build, if packaging succeeded.
 
 ## Develop
 

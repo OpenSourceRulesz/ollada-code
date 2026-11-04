@@ -56,6 +56,7 @@ import { countChangedLines, isImportOnlyReplacement, planEdit, simpleDiff, strip
 import { WaitingHistory } from './waiting';
 import type { ActionKind } from './waiting';
 import { getWebviewHtml } from './webview';
+import { checkKey, isMercuryModel, MERCURY_CONSENT, MERCURY_MODELS, MERCURY_SECRET, mercuryChat } from './mercury';
 import { showDownloadButton } from './screen';
 
 const MIN_VERSION = '0.3.4';
@@ -103,6 +104,11 @@ export function activate(context: vscode.ExtensionContext): void {
   let servePort: number | undefined;
   let serveReused = false;
   let serveModel = vscode.workspace.getConfiguration('ollada-code').get<string>('model', 'sdar:4b');
+  // 0.1.8: Mercury (Inception) is the one optional cloud model. Its key is in
+  // SecretStorage; mercuryConnected mirrors whether one is saved.
+  let mercuryConnected = false;
+  let lastLocalModel = isMercuryModel(serveModel) ? 'sdar:4b' : serveModel;
+  void context.secrets.get(MERCURY_SECRET).then((k) => { mercuryConnected = !!k; });
   let machineKind: MachineKind = 'cpu';
   const proposals = new ProposalStore();
   // 0.1.6: the snapshot a Fix proposal was made from, so a Discard can
@@ -418,10 +424,17 @@ export function activate(context: vscode.ExtensionContext): void {
       canStartServe = canStartServe && !serveChild;
     }
     const kindText = machineKind === 'cpu' ? 'CPU' : 'GPU';
-    const headerStatus = servePort
-      ? `${serveModel} on ${kindText}, serve on ${servePort}${serveReused ? ' (existing)' : ''}`
-      : 'Serve isn’t running';
-    return { steps, models, cacheNote, serving: !!servePort, serveBanner, serveButton, canStartServe, headerStatus };
+    const cloudSelected = isMercuryModel(serveModel);
+    const headerStatus = cloudSelected
+      ? `${serveModel}, cloud (Inception)${mercuryConnected ? '' : ', not connected'}`
+      : servePort
+        ? `${serveModel} on ${kindText}, serve on ${servePort}${serveReused ? ' (existing)' : ''}`
+        : 'Serve isn’t running';
+    return {
+      steps, models, cacheNote, serving: !!servePort, serveBanner, serveButton, canStartServe, headerStatus,
+      mercury: { connected: mercuryConnected, selected: cloudSelected, model: MERCURY_MODELS[0] },
+      cloudActive: cloudSelected && mercuryConnected,
+    };
   }
 
   let refreshAgain = false;
@@ -488,6 +501,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // ---------- model calls ----------
   async function chatOnce(model: string, prompt: string, signal: AbortSignal): Promise<{ text: string; snapshots?: Snapshots }> {
+    if (isMercuryModel(model)) {
+      // Cloud path: Inception's Mercury API only (see mercury.ts). Same prompts, same proposal flow.
+      const key = await context.secrets.get(MERCURY_SECRET);
+      if (!key) { throw new Error('Mercury isn’t connected. Connect it in Setup, or pick a local model.'); }
+      return { text: await mercuryChat(fetch as unknown as Parameters<typeof mercuryChat>[0], key, model, prompt, signal) };
+    }
     if (!servePort) { throw new Error('Serve isn’t running. Start serve from Setup at the top of the panel.'); }
     const url = `http://127.0.0.1:${servePort}/api/chat`;
     const attempts: Array<Record<string, unknown> | undefined> = [
@@ -524,10 +543,63 @@ export function activate(context: vscode.ExtensionContext): void {
 
   function codeBlock(text: string): string { return `\`\`\`\n${text}\n\`\`\``; }
 
+  /** Ready to send with the selected model: Mercury needs a saved key, local models need serve. */
+  function canSend(): boolean { return isMercuryModel(serveModel) ? mercuryConnected : !!servePort; }
+  function cloudBlockedHint(): string | undefined {
+    return isMercuryModel(serveModel) && !mercuryConnected ? 'Mercury isn’t connected. Connect it in Setup, or pick a local model.' : undefined;
+  }
+  /**
+   * The cloud warning. Before code goes to Mercury, say plainly where it
+   * goes and who bills it. "Always send" is remembered; "Send" asks again
+   * next time; closing the dialog sends nothing.
+   */
+  async function confirmCloud(): Promise<boolean> {
+    if (!isMercuryModel(serveModel)) { return true; }
+    if (context.globalState.get<boolean>(MERCURY_CONSENT)) { return true; }
+    const choice = await vscode.window.showWarningMessage(
+      'Send this to Mercury?',
+      {
+        modal: true,
+        detail: 'Mercury runs on Inception Labs’ servers, not on this machine. Your selected code, the file’s imports and your message will be sent to Inception, and usage is billed to your Inception account. Pick a local model to keep code on this machine.',
+      },
+      'Send to Mercury', 'Always send to Mercury',
+    );
+    if (choice === 'Always send to Mercury') { await context.globalState.update(MERCURY_CONSENT, true); return true; }
+    return choice === 'Send to Mercury';
+  }
+  async function connectMercury(): Promise<void> {
+    const key = await vscode.window.showInputBox({
+      title: 'Connect Mercury (Inception Labs)',
+      prompt: 'Paste your Inception API key. It’s stored in VS Code’s secret storage and only sent to api.inceptionlabs.ai.',
+      password: true, ignoreFocusOut: true, placeHolder: 'Inception API key',
+    });
+    if (!key) { return; }
+    const result = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Checking the key with Inception…' },
+      () => checkKey(fetch as unknown as Parameters<typeof checkKey>[0], key),
+    );
+    if (!result.ok) { void vscode.window.showErrorMessage(`Mercury not connected: ${result.message}`); return; }
+    await context.secrets.store(MERCURY_SECRET, key.trim());
+    mercuryConnected = true;
+    void vscode.window.showInformationMessage('Mercury is connected. Pick mercury-2 in the model menu to use it.');
+    void refreshSetup();
+  }
+  async function disconnectMercury(): Promise<void> {
+    await context.secrets.delete(MERCURY_SECRET);
+    mercuryConnected = false;
+    if (isMercuryModel(serveModel)) {
+      serveModel = lastLocalModel;
+      await vscode.workspace.getConfiguration('ollada-code').update('model', serveModel, vscode.ConfigurationTarget.Global);
+    }
+    void refreshSetup();
+  }
+
   /** Explain / Fix / Insert, using the editor snapshot taken when the button was clicked. */
   async function runAction(action: ActionKind, ctx: CapturedContext | undefined): Promise<void> {
     await detectServe();
-    const plan = planAction(action, ctx, !!servePort);
+    const blocked = cloudBlockedHint();
+    if (blocked) { post('hint', { text: blocked }); return; }
+    const plan = planAction(action, ctx, canSend());
     if (!plan.ok || !ctx) {
       post('hint', { text: plan.ok ? 'No file selected.' : plan.hint });
       if (!servePort) { void refreshSetup(); }
@@ -563,7 +635,9 @@ export function activate(context: vscode.ExtensionContext): void {
       title = 'Writing code to insert';
       shown = 'Insert at cursor';
     }
-    post('userMessage', { text: shown, contextLabel: ctx.label });
+    if (!(await confirmCloud())) { post('hint', { text: 'Not sent. Pick a local model to keep code on this machine.' }); return; }
+    // 0.1.7: the turn keeps what was sent, so the log shows the code, not just a label.
+    post('userMessage', { text: shown, title: shown, kind: action, contextLabel: ctx.label, code: action === 'insert' && !ctx.hasSelection ? '' : ctx.selectionText, cloud: isMercuryModel(serveModel) });
     // 0.1.6: Fix (one-shot and retry) shares one attempt path, so a
     // retry goes through the same token warning, waiting timer, model
     // call, and proposal gate as the original Fix.
@@ -674,9 +748,12 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     await detectServe();
-    const plan = planAction('fix', ctx, !!servePort);
+    const blockedFix = cloudBlockedHint();
+    if (blockedFix) { post('hint', { text: blockedFix }); return; }
+    const plan = planAction('fix', ctx, canSend());
     if (!plan.ok) { post('hint', { text: plan.hint }); return; }
-    post('userMessage', { text: `Retry fix: ${instruction}`, contextLabel: ctx.label });
+    if (!(await confirmCloud())) { post('hint', { text: 'Not sent. Pick a local model to keep code on this machine.' }); return; }
+    post('userMessage', { text: `Retry fix: ${instruction}`, title: `Retry fix: ${instruction}`, kind: 'fix', contextLabel: ctx.label, code: ctx.selectionText, cloud: isMercuryModel(serveModel) });
     const prompt = fixRetryPrompt(instruction, ctx.selectionText, ctx.fileName, ctx.headerImports, ctx.headerImportsTruncated);
     await runFixAttempt(ctx, prompt);
   }
@@ -795,8 +872,12 @@ export function activate(context: vscode.ExtensionContext): void {
   async function freeChat(text: string): Promise<void> {
     const ctx = captureContext(editorState());
     await detectServe();
-    const plan = planAction('chat', ctx, !!servePort);
-    post('userMessage', { text, contextLabel: ctx ? ctx.label : '' });
+    const blockedChat = cloudBlockedHint();
+    if (blockedChat) { post('hint', { text: blockedChat }); return; }
+    const plan = planAction('chat', ctx, canSend());
+    if (plan.ok && !(await confirmCloud())) { post('hint', { text: 'Not sent. Pick a local model to keep code on this machine.' }); return; }
+    const firstLine = text.trim().split(/\r?\n/)[0];
+    post('userMessage', { text, title: firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine, kind: 'chat', contextLabel: ctx ? ctx.label : '', code: ctx?.hasSelection ? ctx.selectionText : '', cloud: isMercuryModel(serveModel) });
     if (!plan.ok) { post('hint', { text: plan.hint }); return; }
     // Chat includes the selected code when there is a selection, so the
     // model has the context the chip shows.
@@ -820,9 +901,18 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   // ---------- view ----------
+  function postSettings(): void {
+    const cfg = vscode.workspace.getConfiguration('ollada-code');
+    post('settings', { appearance: cfg.get<string>('appearance', 'brand'), animation: cfg.get<boolean>('animation', true) });
+  }
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
+    if (e.affectsConfiguration('ollada-code.appearance') || e.affectsConfiguration('ollada-code.animation')) { postSettings(); }
+  }));
+
   async function handleMessage(message: { type: string; [key: string]: unknown }): Promise<void> {
     switch (message.type) {
       case 'ready': {
+        postSettings();
         postContext();
         void refreshSetup();
         // A view that was re-created only re-shows a proposal that is still pending.
@@ -840,6 +930,8 @@ export function activate(context: vscode.ExtensionContext): void {
         // reloads, then refresh so header + Selected badge update.
         // Download clicks do NOT come through here and do not change it.
         const model = String(message.model ?? '');
+        if (isMercuryModel(model) && !mercuryConnected) { void connectMercury(); break; }
+        if (model && !isMercuryModel(model)) { lastLocalModel = model; }
         if (model) {
           await vscode.workspace.getConfiguration('ollada-code').update('model', model, vscode.ConfigurationTarget.Global);
           serveModel = model;
@@ -848,6 +940,8 @@ export function activate(context: vscode.ExtensionContext): void {
         break;
       }
       case 'changePython': void changePython(); break;
+      case 'connectMercury': void connectMercury(); break;
+      case 'disconnectMercury': void disconnectMercury(); break;
       case 'startServe': void startServe(); break;
       case 'copy':
         if (typeof message.text === 'string') { void vscode.env.clipboard.writeText(message.text); }
@@ -871,6 +965,14 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       case 'chat': void freeChat(String(message.text ?? '')); break;
       case 'cancel': abortController?.abort(); break;
+      case 'clear': {
+        // Clear chat: stop the request on screen and drop any pending
+        // proposal, so a card that is no longer visible can never be accepted.
+        abortController?.abort();
+        const p = proposals.pending();
+        if (p) { proposals.discard(p.id); snapshotsById.delete(p.id); }
+        break;
+      }
       case 'accept': void acceptProposal(String(message.id ?? '')); break;
       case 'reject': rejectProposal(String(message.id ?? '')); break;
       case 'retryFix': {
@@ -912,8 +1014,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerWebviewViewProvider(VIEW_ID, {
       resolveWebviewView(webviewView) {
         view = webviewView;
-        webviewView.webview.options = { enableScripts: true };
-        webviewView.webview.html = getWebviewHtml();
+        const media = vscode.Uri.joinPath(context.extensionUri, 'media');
+        webviewView.webview.options = { enableScripts: true, localResourceRoots: [media] };
+        // Geist and Geist Mono ship with the extension (SIL OFL 1.1, media/fonts/GEIST-LICENSE.txt); no network.
+        webviewView.webview.html = getWebviewHtml({
+          sans: webviewView.webview.asWebviewUri(vscode.Uri.joinPath(media, 'fonts', 'Geist-Variable.woff2')).toString(),
+          mono: webviewView.webview.asWebviewUri(vscode.Uri.joinPath(media, 'fonts', 'GeistMono-Variable.woff2')).toString(),
+        });
         webviewView.webview.onDidReceiveMessage((m: { type: string; [key: string]: unknown }) => { void handleMessage(m); });
         webviewView.onDidDispose(() => { if (view === webviewView) { view = undefined; } });
       },
@@ -925,6 +1032,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('ollada-code.startServe', () => void startServe()),
     vscode.commands.registerCommand('ollada-code.checkAgain', () => { pythonCache = undefined; void refreshSetup(); }),
     vscode.commands.registerCommand('ollada-code.changePython', () => void changePython()),
+    vscode.commands.registerCommand('ollada-code.connectMercury', () => void connectMercury()),
+    vscode.commands.registerCommand('ollada-code.disconnectMercury', () => void disconnectMercury()),
   );
 }
 
