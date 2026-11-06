@@ -45,6 +45,7 @@ import type { CapturedContext, RawEditorState } from './context';
 import { fitDotColor, fitLabel, NEMOTRON_DETAIL, recommendedIndex } from './fitLabels';
 import type { MachineKind, RecommendRow } from './fitLabels';
 import { findOlladaServe, FIRST_PORT, MAX_PORT, pickPort, probeOllada } from './ports';
+import { ChatBlockStore } from './chatBlocks';
 import { gateProposal, ProposalStore } from './proposals';
 import type { Proposal } from './proposals';
 import { CHECKS_PASSED_WARNING, EXPLAIN_PROMPT, FIX_PROMPT, fixRetryPrompt, importsContextBlock, insertPrompt } from './prompts';
@@ -111,6 +112,10 @@ export function activate(context: vscode.ExtensionContext): void {
   void context.secrets.get(MERCURY_SECRET).then((k) => { mercuryConnected = !!k; });
   let machineKind: MachineKind = 'cpu';
   const proposals = new ProposalStore();
+  // 0.1.9: host-side store of Chat-answer code blocks. The panel posts
+  // a block id + index for Copy/Insert; the host looks the exact block
+  // text up here, so the webview never round-trips code.
+  const chatBlocks = new ChatBlockStore();
   // 0.1.6: the snapshot a Fix proposal was made from, so a Discard can
   // offer a one-time Retry fix with an instruction against that same
   // selection. Never written to, never persisted.
@@ -129,6 +134,16 @@ export function activate(context: vscode.ExtensionContext): void {
 
   function post(type: string, data: Record<string, unknown> = {}): void {
     void view?.webview.postMessage({ type, ...data });
+  }
+
+  // 0.1.9: send a Chat/Explain answer with its fences intact, so the
+  // panel can split code blocks from prose. The blocks are stored
+  // host-side under an answer id; the panel's Copy/Insert buttons name
+  // that id + index, never the code itself.
+  function postAnswer(meta: string, text: string, isCode: boolean, seconds: number): void {
+    const id = chatBlocks.nextId();
+    chatBlocks.register(id, text, seconds);
+    post('message', { meta, body: text, isCode, id });
   }
 
   // ---------- editor context ----------
@@ -670,7 +685,7 @@ export function activate(context: vscode.ExtensionContext): void {
       post('waitingDone', {});
       const clean = stripFences(result.text);
       if (action === 'explain') {
-        post('message', { meta: `${ctx.label}, explanation, ${seconds.toFixed(1)} s`, body: clean, isCode: false });
+        postAnswer(`${ctx.label}, explanation, ${seconds.toFixed(1)} s`, result.text, false, seconds);
         return;
       }
       // Fix returns earlier via runFixAttempt; only explain/insert reach here.
@@ -890,7 +905,8 @@ export function activate(context: vscode.ExtensionContext): void {
       const result = await chatOnce(serveModel, prompt, controller.signal);
       clearInterval(timer);
       post('waitingDone', {});
-      post('message', { meta: `${serveModel}, ${((Date.now() - started) / 1000).toFixed(1)} s`, body: stripFences(result.text), isCode: false });
+      const seconds = (Date.now() - started) / 1000;
+      postAnswer(`${serveModel}, ${seconds.toFixed(1)} s`, result.text, false, seconds);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') { post('hint', { text: 'Cancelled.' }); }
       else { post('hint', { text: `Ollada error: ${err instanceof Error ? err.message : String(err)}` }); }
@@ -946,6 +962,26 @@ export function activate(context: vscode.ExtensionContext): void {
       case 'copy':
         if (typeof message.text === 'string') { void vscode.env.clipboard.writeText(message.text); }
         break;
+      case 'copyChatBlock': {
+        // 0.1.9: Copy a Chat code block from the host-side store, so
+        // the panel never round-trips the code.
+        const found = chatBlocks.get(String(message.id ?? ''), Number(message.index ?? -1));
+        if (found) { void vscode.env.clipboard.writeText(found.block.code); }
+        else { post('hint', { text: 'That code block is no longer available. Ask again.' }); }
+        break;
+      }
+      case 'insertChatBlock': {
+        // 0.1.9: Insert exactly the tapped block — never re-generated,
+        // never auto-applied. It goes through the normal proposal flow
+        // (verifier + diff preview + Accept/Reject), against a fresh
+        // snapshot of the editor taken at tap time.
+        const found = chatBlocks.get(String(message.id ?? ''), Number(message.index ?? -1));
+        if (!found) { post('hint', { text: 'That code block is no longer available. Ask again.' }); break; }
+        const ctx = captureContext(editorState());
+        if (!ctx) { post('hint', { text: 'Open a file first, then tap Insert on the code block.' }); break; }
+        void proposeEdit('insert', ctx, found.block.code, found.seconds, undefined);
+        break;
+      }
       case 'download': {
         const model = String(message.model ?? '');
         const py = await findPython();
@@ -971,6 +1007,7 @@ export function activate(context: vscode.ExtensionContext): void {
         abortController?.abort();
         const p = proposals.pending();
         if (p) { proposals.discard(p.id); snapshotsById.delete(p.id); }
+        chatBlocks.clear();
         break;
       }
       case 'accept': void acceptProposal(String(message.id ?? '')); break;

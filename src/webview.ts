@@ -21,6 +21,7 @@
 // model generated the answer. Real serve snapshots, when a future serve
 // returns them, still open the separate Watch diffusion replay.
 import { revealOrder, scrambleToken } from './reveal';
+import { parseChatAnswer } from './chatBlocks';
 
 export interface WebviewFonts { sans: string; mono: string; }
 
@@ -149,6 +150,10 @@ export function getWebviewHtml(fonts?: WebviewFonts): string {
   .sent pre, .diff, .answer.code { margin: 0; background: var(--well); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 12px/1.55 var(--mono); white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; }
   .user-text { white-space: pre-wrap; }
   .answer { white-space: pre-wrap; word-break: break-word; }
+  .code-block { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .code-block-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; background: var(--surface); border-bottom: 1px solid var(--line); font: 12px var(--mono); color: var(--muted); }
+  .code-block-head .lang { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .code-block pre { margin: 0; background: var(--well); padding: 8px 10px; font: 12px/1.55 var(--mono); white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; }
   .diff > span { display: block; min-height: 1.55em; }
   .diff .add { background: var(--add-bg); }
   .diff .rem { background: var(--rem-bg); }
@@ -171,7 +176,7 @@ export function getWebviewHtml(fonts?: WebviewFonts): string {
   .wait-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .elapsed { font-family: var(--mono); color: var(--ink); }
 
-  .welcome { margin: auto 0 0; padding: 8px 4px 14px; }
+  .welcome { margin: 0; padding: 8px 4px 14px; }
   .welcome h1 { font-size: 28px; line-height: 1.05; letter-spacing: -0.035em; margin: 0 0 12px; font-weight: 600; max-width: 12ch; }
   .welcome p { margin: 0 0 16px; color: var(--muted); max-width: 36ch; }
   .starters { display: flex; flex-direction: column; gap: 6px; max-width: 32rem; }
@@ -249,6 +254,7 @@ export function getWebviewHtml(fonts?: WebviewFonts): string {
       <div id="welcome" class="welcome">
         <h1 id="welcome-title" aria-label="Pull a diffusion model. Run it.">Pull a diffusion model. Run it.</h1>
         <p>Fix, explain or rewrite code with a diffusion model. Every change is a preview until you accept it.</p>
+        <div><button id="welcome-replay" class="text-btn" title="Replay the headline reveal">Replay headline</button></div>
         <div id="starters" class="starters"></div>
       </div>
     </main>
@@ -307,6 +313,7 @@ export function getWebviewHtml(fonts?: WebviewFonts): string {
   const vscode = acquireVsCodeApi();
   const revealOrder = (${revealOrder.toString()});
   const scrambleToken = (${scrambleToken.toString()});
+  const parseChatAnswer = (${parseChatAnswer.toString()});
   const S = { animate: true, turn: null, turnSeq: 0, frames: [], frameIndex: 0, totalSteps: 0, serving: null, models: [] };
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   function post(type, data) { vscode.postMessage(Object.assign({ type: type }, data || {})); }
@@ -382,12 +389,16 @@ export function getWebviewHtml(fonts?: WebviewFonts): string {
   }
 
   // ---------- welcome headline (same effect as the website) ----------
-  (function() {
+  // Replayable: the headline reveal runs once on load, and again
+  // whenever the Replay button on the welcome block is tapped.
+  function replayWelcome() {
     const h = document.getElementById('welcome-title');
     if (!h) { return; }
     const span = el('span'); h.textContent = ''; h.appendChild(span);
     revealInto(span, 'Pull a diffusion model. Run it.');
-  })();
+  }
+  replayWelcome();
+  document.getElementById('welcome-replay').onclick = function() { replayWelcome(); };
 
   // ---------- turns ----------
   function collapseFinished() {
@@ -500,15 +511,45 @@ export function getWebviewHtml(fonts?: WebviewFonts): string {
     }
     scrollLog();
   }
-  function showAnswer(meta, text, isCode) {
+  // Code first, explanation under it. A fenced block becomes its own
+  // block (language label + Copy + Insert); the prose with the blocks
+  // removed is the explanation below. No blocks: render exactly as
+  // before, one answer div. isCode answers (proposals shown as code)
+  // never go through the fence split.
+  function renderAnswerInto(wrap, text, isCode) {
+    const parsed = isCode ? { blocks: [], prose: text } : parseChatAnswer(text);
+    if (parsed.blocks.length === 0) {
+      const a = el('div', 'answer' + (isCode ? ' code' : '')); a.dataset.text = text;
+      wrap.appendChild(a);
+      revealInto(a, text, scrollLog);
+      return;
+    }
+    parsed.blocks.forEach(function(b, i) {
+      const block = el('div', 'code-block');
+      const head = el('div', 'code-block-head');
+      head.innerHTML = '<span class="lang">' + esc(b.lang || 'code') + '</span>' +
+        '<button class="btn-ghost" data-copy-block="' + i + '" style="padding:2px 10px">Copy</button>' +
+        '<button class="btn" data-insert-block="' + i + '" style="padding:2px 10px">Insert</button>';
+      block.appendChild(head);
+      const pre = el('pre'); pre.textContent = b.code; block.appendChild(pre);
+      wrap.appendChild(block);
+    });
+    if (parsed.prose) {
+      const a = el('div', 'answer'); a.dataset.text = parsed.prose;
+      wrap.appendChild(a);
+      revealInto(a, parsed.prose, scrollLog);
+    } else { scrollLog(); }
+  }
+  function showAnswer(meta, text, isCode, id) {
     if (!S.turn) { newTurn('Answer', '', '', false); }
     const t = S.turn; const body = turnBody();
     const wrap = el('div', 'answer-wrap');
+    if (id) { wrap.dataset.answerId = id; }
+    wrap.dataset.text = text; wrap.dataset.isCode = isCode ? '1' : '';
     wrap.innerHTML = '<div class="meta"><span>' + esc(meta) + '</span><button class="icon-btn" data-replay="1" title="Replay the reveal (illustration)" aria-label="Replay the reveal"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button></div>';
-    const a = el('div', 'answer' + (isCode ? ' code' : '')); a.dataset.text = text;
-    wrap.appendChild(a); body.appendChild(wrap);
+    body.appendChild(wrap);
     setStatus(t, 'Answered', 'ok');
-    revealInto(a, text, scrollLog);
+    renderAnswerInto(wrap, text, isCode);
     scrollLog();
   }
 
@@ -523,10 +564,25 @@ export function getWebviewHtml(fonts?: WebviewFonts): string {
       const v = box ? box.value.trim() : '';
       if (v) { row.remove(); post('retryFix', { text: v }); } else if (box) { box.focus(); }
     }
+    if (b.dataset.copyBlock != null) {
+      // Copy and Insert name the block by index; the host looks the
+      // exact text up in its own store, so the webview never
+      // round-trips code.
+      const wrap = b.closest('.answer-wrap');
+      if (wrap && wrap.dataset.answerId) { post('copyChatBlock', { id: wrap.dataset.answerId, index: Number(b.dataset.copyBlock) }); }
+    }
+    if (b.dataset.insertBlock != null) {
+      const wrap = b.closest('.answer-wrap');
+      if (wrap && wrap.dataset.answerId) { b.disabled = true; post('insertChatBlock', { id: wrap.dataset.answerId, index: Number(b.dataset.insertBlock) }); }
+    }
     if (b.dataset.replay) {
       const card = b.closest('.result'); const ans = b.closest('.answer-wrap');
       if (card && card._diff) { revealDiff(card.querySelector('.diff'), card._diff); }
-      if (ans) { const a = ans.querySelector('.answer'); revealInto(a, a.dataset.text); }
+      if (ans) {
+        const meta = ans.querySelector('.meta');
+        Array.from(ans.children).forEach(function(c) { if (c !== meta) { c.remove(); } });
+        renderAnswerInto(ans, ans.dataset.text || '', ans.dataset.isCode === '1');
+      }
     }
   });
   document.getElementById('collapse-btn').onclick = function() { log.querySelectorAll('.turn').forEach(function(t) { setCollapsed(t, true); }); };
@@ -701,7 +757,7 @@ export function getWebviewHtml(fonts?: WebviewFonts): string {
     if (m.type === 'context') { renderContext(m); }
     if (m.type === 'status') { document.getElementById('status-text').textContent = m.status; document.getElementById('model-pick').title = m.status; }
     if (m.type === 'userMessage') { newTurn(m.title || m.text, m.contextLabel, m.code || '', m.kind === 'chat', !!m.cloud); if (m.kind === 'chat') { const u = el('div', 'user-text'); u.textContent = m.text; turnBody().insertBefore(u, turnBody().firstChild); } }
-    if (m.type === 'message') { showAnswer(m.meta, m.body, m.isCode); }
+    if (m.type === 'message') { showAnswer(m.meta, m.body, m.isCode, m.id); }
     if (m.type === 'hint') {
       if (S.turn && S.turn.dataset.state === 'working') { setStatus(S.turn, /^Cancelled/.test(m.text) ? 'Cancelled' : 'Stopped', /^Cancelled/.test(m.text) ? '' : 'bad'); }
       addNote(m.text);

@@ -248,3 +248,59 @@ test('Mercury in use: header shows cloud status, no serve banner, cloud turns ar
   send({ type: 'userMessage', text: 'Fix selection', title: 'Fix selection', kind: 'fix', contextLabel: 'f.py:3', code: 'x', cloud: false });
   assert.equal(Array.from($('body')!.ownerDocument.querySelectorAll('.turn'))[1].querySelector('.cloud-tag'), null, 'local turns have no cloud tag');
 });
+
+test('Chat answer with a fenced block: code first with Copy + Insert, prose under it', () => {
+  const { $, $$, send, posted } = load({ reduceMotion: true });
+  send({ type: 'userMessage', text: 'write me a python file that reads a csv', title: 'write me a python file that reads a csv', kind: 'chat', contextLabel: '', code: '' });
+  const body = "Sure, here's an example:\n\n```python\nimport csv\n\nwith open('example.csv', 'r') as file:\n    print(file.read())\n```\n\nThis code uses the 'csv' module.";
+  send({ type: 'message', meta: 'sdar:4b, 87.5 s', body, isCode: false, id: 'a1' });
+  const wrap = $('.answer-wrap')!;
+  assert.ok(wrap, 'answer rendered');
+  const blocks = $$('.code-block');
+  assert.equal(blocks.length, 1, 'one fenced block, one code block');
+  assert.ok(blocks[0].textContent!.includes("with open('example.csv', 'r') as file:"));
+  assert.ok(blocks[0].textContent!.includes('python'), 'language label shown');
+  assert.ok(blocks[0].querySelector('[data-copy-block="0"]'), 'Copy button on the block');
+  assert.ok(blocks[0].querySelector('[data-insert-block="0"]'), 'Insert button on the block');
+  // Code comes before the explanation in the DOM, and the explanation
+  // does not carry the code.
+  const order = Array.from(wrap.children).map((c) => c.className);
+  assert.ok(order.indexOf('code-block') < order.indexOf('answer'), 'code first, prose under it: ' + order.join(', '));
+  assert.ok($('.answer')!.textContent!.includes("This code uses the 'csv' module."));
+  assert.ok(!$('.answer')!.textContent!.includes('import csv'));
+  // Copy and Insert name the block by id + index; neither carries the code itself.
+  (blocks[0].querySelector('[data-copy-block]') as HTMLButtonElement).click();
+  assert.deepEqual(posted.at(-1), { type: 'copyChatBlock', id: 'a1', index: 0 });
+  (blocks[0].querySelector('[data-insert-block]') as HTMLButtonElement).click();
+  assert.deepEqual(posted.at(-1), { type: 'insertChatBlock', id: 'a1', index: 0 });
+});
+
+test('Chat answer with two blocks: each gets its own buttons and index', () => {
+  const { $$, send } = load({ reduceMotion: true });
+  send({ type: 'userMessage', text: 'two', title: 'two', kind: 'chat', contextLabel: '', code: '' });
+  send({ type: 'message', meta: 'm', body: 'A:\n\n```python\nprint(1)\n```\n\nB:\n\n```python\nprint(2)\n```', isCode: false, id: 'a2' });
+  const blocks = $$('.code-block');
+  assert.equal(blocks.length, 2);
+  assert.ok(blocks[0].textContent!.includes('print(1)'));
+  assert.ok(blocks[1].textContent!.includes('print(2)'));
+  assert.ok(blocks[1].querySelector('[data-insert-block="1"]'), 'second block has its own Insert with index 1');
+});
+
+test('Chat answer with no fence renders as before, with no code-block buttons', () => {
+  const { $, $$, send } = load({ reduceMotion: true });
+  send({ type: 'userMessage', text: 'why', title: 'why', kind: 'chat', contextLabel: '', code: '' });
+  send({ type: 'message', meta: 'm', body: 'Just an explanation, no code.', isCode: false, id: 'a3' });
+  assert.equal($$('.code-block').length, 0);
+  assert.equal($('.answer')!.textContent, 'Just an explanation, no code.');
+});
+
+test('welcome headline replay: the button replays the reveal', () => {
+  const { $, send } = load({ reduceMotion: true });
+  send({ type: 'settings', appearance: 'brand', animation: true });
+  const title = $('#welcome-title')!;
+  assert.equal(title.textContent, 'Pull a diffusion model. Run it.');
+  const btn = $('#welcome-replay') as HTMLButtonElement | null;
+  assert.ok(btn, 'welcome block has a Replay button');
+  btn!.click();
+  assert.equal(title.textContent, 'Pull a diffusion model. Run it.', 'replay ends on the real headline');
+});
